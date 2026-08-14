@@ -8,7 +8,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Environment Variable से टोकन लें या सीधे यहाँ डालें
-TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
+TOKEN = os.environ.get("BOT_TOKEN", "8483068207:AAEq3LPHIYlug4qtQnkc9dQB2u-r6kQm1cs")
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
