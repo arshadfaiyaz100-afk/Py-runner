@@ -11,6 +11,7 @@ import requests
 import zipfile
 import shutil
 import random
+import importlib.util
 from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -28,7 +29,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8483068207:AAEq3LPHIYlug4qtQnkc9dQB2u-r
 GH_TOKEN = os.environ.get("GH_TOKEN", "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")
 GH_REPO = os.environ.get("GH_REPO", "my-hosted-bots-backup")
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True, num_threads=32)
 app = Flask(__name__)
 
 # System Directories & Globals
@@ -52,7 +53,7 @@ PIP_MAP = {
     "crypto": "pycryptodome", "sklearn": "scikit-learn", "telegram": "python-telegram-bot",
     "discord": "discord.py", "pyrogram": "pyrogram tgcrypto", "aiogram": "aiogram",
     "dotenv": "python-dotenv", "dateutil": "python-dateutil", "jose": "python-jose",
-    "jwt": "PyJWT", "dantic": "pydantic"
+    "jwt": "PyJWT", "dantic": "pydantic", "torch": "torch", "tensorflow": "tensorflow"
 }
 BUILTINS = sys.builtin_module_names
 
@@ -73,6 +74,21 @@ def get_readable_uptime(seconds):
 def get_progress_bar(percent):
     filled = int(percent / 10)
     return "█" * filled + "░" * (10 - filled)
+
+# Detailed Progress HUD Animator (Added for high-detail status tracking)
+def update_hud(chat_id, msg_id, title, action, percent, start_time):
+    bar = get_progress_bar(percent)
+    elapsed = round(time.time() - start_time, 1)
+    detailed_text = (
+        f"⚙️ **{title} (Verified Engine)**\n\n"
+        f"`[{bar}] {percent}%`\n\n"
+        f"⚡ **Action Status:** `{action}`\n"
+        f"⏱️ **Elapsed Time:** `{elapsed}s`"
+    )
+    try:
+        bot.edit_message_text(detailed_text, chat_id, msg_id, parse_mode="Markdown")
+    except:
+        pass
 
 def generate_bot_id():
     while True:
@@ -97,15 +113,26 @@ def deep_analyze_imports(file_path):
 
     return [PIP_MAP.get(m, m) for m in detected_modules if m not in BUILTINS and not os.path.exists(os.path.join(HOST_DIR, f"{m}.py"))]
 
-def auto_install_packages(modules, chat_id, progress_msg):
-    if not modules: return True
+# Strict Verified Package Installer (Replaced fake success with real verification)
+def auto_install_packages_verified(modules, chat_id, msg_id, start_time):
+    if not modules: return True, ""
+    total = len(modules)
     for index, mod in enumerate(modules, start=1):
+        pct = int((index / total) * 100)
+        update_hud(chat_id, msg_id, "Verified Telemetry HUD", f"Installing package [{index}/{total}] ➔ {mod}", pct, start_time)
         try:
-            pct = int((index / len(modules)) * 100)
-            bot.edit_message_text(f"🧠 **Smart Auto-Installing:**\n`[{get_progress_bar(pct)}] {pct}%` ➔ `{mod}`", chat_id, progress_msg.message_id, parse_mode="Markdown")
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', *mod.split(), '--no-cache-dir'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except: pass
-    return True
+            res = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', *mod.split(), '--no-cache-dir'], 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=600
+            )
+            if res.returncode != 0:
+                return False, f"Failed to install `{mod}`.\nError: {res.stderr[-300:]}"
+        except Exception as e:
+            return False, f"Exception for `{mod}`: {str(e)}"
+    return True, ""
 
 def backup_file_to_github(filename, content_bytes):
     if not GH_TOKEN or GH_TOKEN.startswith("YOUR_"): return False
@@ -151,9 +178,9 @@ def auto_healing_monitor():
             if psutil and proc.poll() is None:
                 try:
                     p = psutil.Process(proc.pid)
-                    if p.cpu_percent(interval=1.0) > 85.0:  
+                    if p.memory_info().rss > 2048 * 1024 * 1024:  # Heavy Limit 2GB
                         stop_script_process(bot_id)
-                        bot.send_message(owner_id, f"🚨 **AUTO-KILL:** Your bot `{bot_id}` was taking too much CPU/RAM and was force-stopped!")
+                        bot.send_message(owner_id, f"🚨 **AUTO-KILL:** Your bot `{bot_id}` exceeded RAM limit and was force-stopped!")
                         continue
                 except: pass
 
@@ -170,7 +197,7 @@ def auto_healing_monitor():
                     target_pkg = PIP_MAP.get(missing_pkg, missing_pkg)
                     try:
                         bot.send_message(owner_id, f"⚡ **Self-Healing:** Auto-installing `{target_pkg}` for `{bot_id}`...", parse_mode="Markdown")
-                        subprocess.check_call([sys.executable, '-m', 'pip', 'install', target_pkg])
+                        subprocess.run([sys.executable, '-m', 'pip', 'install', target_pkg], timeout=300)
                     except: pass
                     run_script_process(bot_id, filename, owner_id)
                 elif data["retries"] < 3:
@@ -266,7 +293,7 @@ def handle_callbacks(call):
 
     elif data.startswith("pkg_auto:"):
         bot_id = data.split(":")[1]
-        msg = bot.edit_message_text("🧠 Auto-Install Engine Started...", chat_id, call.message.message_id)
+        msg = bot.edit_message_text("🧠 Initializing Verified Telemetry...", chat_id, call.message.message_id)
         threading.Thread(target=finalize_deployment, args=(chat_id, msg.message_id, bot_id, "auto")).start()
 
     elif data.startswith("pkg_manual:"):
@@ -301,7 +328,7 @@ def handle_callbacks(call):
     elif data == "export_zip":
         bot.send_message(chat_id, "📦 Compressing files...")
         zip_path = f"backup_{user_id}.zip"
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
+        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
             for root, _, files in os.walk(HOST_DIR):
                 for f in files:
                     if is_admin(user_id) or not f.endswith('.log'): 
@@ -393,124 +420,4 @@ def handle_callbacks(call):
             if d["owner_id"] == user_id: stop_script_process(bid)
         bot.send_message(chat_id, "🛑 Your active bots stopped.")
 
-    elif data == "broadcast_menu" and is_admin(user_id):
-        bot.send_message(chat_id, "📢 **Send announcement / Ad message (Text, Photo, etc.):**")
-        bot.register_next_step_handler(call.message, process_broadcast)
-
-# Deployment Workflow Functions
-def process_script_upload(message):
-    user_id = message.from_user.id
-    if not message.document: return
-    filename = message.document.file_name
-    
-    if not (filename.endswith('.py') or filename.endswith('.zip')): return bot.send_message(message.chat.id, "❌ Valid `.py` ya `.zip` file bhejein.")
-    
-    bot_id = generate_bot_id()
-    progress = bot.send_message(message.chat.id, f"🔄 **Assigned ID:** `{bot_id}`\nDownloading File...", parse_mode="Markdown")
-    
-    try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        target_script = f"{bot_id}_{filename}"
-        
-        if filename.endswith('.zip'):
-            zip_path = os.path.join(HOST_DIR, target_script)
-            with open(zip_path, "wb") as f: f.write(downloaded)
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref: zip_ref.extractall(HOST_DIR)
-            os.remove(zip_path)
-            
-            possible_mains = ['main.py', 'bot.py', 'app.py']
-            found = False
-            for p in possible_mains:
-                if os.path.exists(os.path.join(HOST_DIR, p)):
-                    new_name = f"{bot_id}_{p}"
-                    os.rename(os.path.join(HOST_DIR, p), os.path.join(HOST_DIR, new_name))
-                    target_script = new_name
-                    found = True
-                    break
-            if not found: return bot.edit_message_text("❌ `.zip` mein `main.py` ya `bot.py` nahi mila!", message.chat.id, progress.message_id)
-        else:
-            with open(os.path.join(HOST_DIR, target_script), "wb") as f: f.write(downloaded)
-        
-        user_deploy_states[bot_id] = {"owner_id": user_id, "filename": target_script, "msg_id": progress.message_id}
-        bot.edit_message_text(f"📦 **Identity Created:** `{bot_id}`\n\nPackages kaise install karne hain?", message.chat.id, progress.message_id, parse_mode="Markdown", reply_markup=get_package_menu(bot_id))
-    except Exception as e:
-        bot.edit_message_text(f"❌ **Error:** `{str(e)}`", message.chat.id, progress.message_id, parse_mode="Markdown")
-
-def finalize_deployment(chat_id, msg_id, bot_id, install_type, manual_req_path=None):
-    state = user_deploy_states.get(bot_id)
-    if not state: return
-    user_id, target_script = state["owner_id"], state["filename"]
-    script_path = os.path.join(HOST_DIR, target_script)
-    
-    if install_type == "manual" and manual_req_path and os.path.exists(manual_req_path):
-        bot.edit_message_text(f"📦 Installing requirements for `{bot_id}`...", chat_id, msg_id)
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', manual_req_path, '--no-cache-dir'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        needed_packages = deep_analyze_imports(script_path)
-        auto_install_packages(needed_packages, chat_id, type('obj', (object,), {'message_id': msg_id})())
-
-    bot.edit_message_text(f"⚙️ Compiling Code for `{bot_id}`...", chat_id, msg_id)
-    try: py_compile.compile(script_path, doraise=True)
-    except py_compile.PyCompileError as sys_err: return bot.edit_message_text(f"⚠️ Syntax Error:\n```text\n{sys_err}\n```", chat_id, msg_id, parse_mode="Markdown")
-
-    backup_file_to_github(target_script, open(script_path, 'rb').read())
-    run_script_process(bot_id, target_script, user_id)
-
-    bot.edit_message_text(f"🚀 **Deployment Complete!**\n\n📌 **Identity:** `{bot_id}`\n🚀 Status: LIVE", chat_id, msg_id, parse_mode="Markdown")
-    bot.send_message(chat_id, "🎛️ **Manage Options:**", reply_markup=get_control_panel(bot_id, True))
-
-def handle_manual_reqs(message, bot_id):
-    if not message.document: return bot.send_message(message.chat.id, "❌ Please send a valid requirements.txt file.")
-    try:
-        req_p = os.path.join(HOST_DIR, f"req_{bot_id}.txt")
-        file_info = bot.get_file(message.document.file_id)
-        with open(req_p, "wb") as f: f.write(bot.download_file(file_info.file_path))
-        msg = bot.send_message(message.chat.id, "📥 Installing custom requirements...")
-        threading.Thread(target=finalize_deployment, args=(message.chat.id, msg.message_id, bot_id, "manual", req_p)).start()
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Error: {e}")
-
-def process_search_bot(message):
-    query = message.text.strip().upper()
-    if not query.startswith("BOT-"): query = f"BOT-{query}"
-    if query in hosted_processes:
-        proj = hosted_processes[query]
-        is_run = proj["process"].poll() is None
-        bot.send_message(message.chat.id, f"🔍 **Bot Found:** `{query}`", parse_mode="Markdown", reply_markup=get_control_panel(query, is_run))
-    else:
-        bot.send_message(message.chat.id, f"❌ Identity `{query}` not found.")
-
-def save_edited_code(message, bot_id):
-    if not message.text: return bot.send_message(message.chat.id, "Edit cancelled.")
-    proj = hosted_processes.get(bot_id)
-    if not proj: return bot.send_message(message.chat.id, "Bot not found.")
-    
-    script_path = os.path.join(HOST_DIR, proj["filename"])
-    stop_script_process(bot_id)
-    with open(script_path, 'w', encoding='utf-8') as f: f.write(message.text)
-    run_script_process(bot_id, proj["filename"], proj["owner_id"])
-    bot.send_message(message.chat.id, f"✅ `{bot_id}` updated & restarted successfully!", reply_markup=get_control_panel(bot_id, True))
-
-def save_env_var(message):
-    try:
-        key, val = message.text.split("=", 1)
-        uid = message.from_user.id
-        user_custom_envs.setdefault(uid, {})[key.strip()] = val.strip()
-        bot.send_message(message.chat.id, f"✅ **ENV Variable Saved:** `{key.strip()}`", parse_mode="Markdown")
-    except: bot.send_message(message.chat.id, "❌ Invalid format. Use KEY=VALUE")
-
-def process_broadcast(message):
-    if not is_admin(message.from_user.id): return
-    count = 0
-    for target_id in list(user_chats):
-        try:
-            bot.copy_message(chat_id=target_id, from_chat_id=message.chat.id, message_id=message.message_id)
-            count += 1
-        except: pass
-    bot.send_message(message.chat.id, f"✅ Broadcast sent to `{count}` chats!", parse_mode="Markdown", reply_markup=get_admin_menu())
-
-if __name__ == "__main__":
-    threading.Thread(target=auto_healing_monitor, daemon=True).start()
-    threading.Thread(target=lambda: bot.infinity_polling(timeout=10, long_polling_timeout=5), daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    elif
