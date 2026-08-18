@@ -1,4 +1,3 @@
-
 pyTelegramBotAPI
 Flask
 requests
@@ -19,3 +18,14 @@ PyMySQL
 pymongo
 cryptography
 pydantic
+pyyaml
+PyMuPDF
+pycryptodome
+python-telegram-bot
+discord.py
+pyrogram
+tgcrypto
+aiogram
+python-dateutil
+python-jose
+PyJWT
