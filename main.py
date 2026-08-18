@@ -13,14 +13,15 @@ except ImportError:
 # ==========================================
 ADMIN_ID = 7193432903
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8483068207:AAEq3LPHIYlug4qtQnkc9dQB2u-r6kQm1cs")
-GH_TOKEN = os.environ.get("GH_TOKEN", "") # Optional for backup
-GH_REPO = os.environ.get("GH_REPO", "my-hosted-bots-backup")
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True, num_threads=20)
 app = Flask(__name__)
 
-# System Directories & Globals
-HOST_DIR = "hosted_env"
+# ==========================================
+# 📂 ABSOLUTE PATH SYSTEM DIRECTORIES
+# ==========================================
+BASE_DIR = os.path.abspath(os.getcwd())
+HOST_DIR = os.path.join(BASE_DIR, "hosted_env")
 LOG_DIR = os.path.join(HOST_DIR, "logs")
 TEMP_DIR = os.path.join(HOST_DIR, "temp_uploads")
 WEB_DIR = os.path.join(HOST_DIR, "web_public")
@@ -78,7 +79,7 @@ def animate_progress(chat_id, msg_id, text, percent):
     bar_str = get_progress_bar(percent)
     try:
         bot.edit_message_text(f"⚙️ **System Engine Processing:**\n\n`[{bar_str}] {percent}%`\n> {text}", chat_id, msg_id, parse_mode="Markdown")
-        time.sleep(0.8) 
+        time.sleep(0.6) 
     except: pass
 
 def generate_bot_id():
@@ -102,39 +103,27 @@ def deep_analyze_imports(file_path):
         detected_modules.update(re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', content, re.MULTILINE))
     return [PIP_MAP.get(m, m) for m in detected_modules if m not in BUILTINS]
 
-def backup_file_to_github(filename, content_bytes):
-    if not GH_TOKEN or GH_TOKEN.startswith("YOUR_"): return False
-    try:
-        url = f"https://api.github.com/repos/{GH_TOKEN.split('_')[0]}/{GH_REPO}/contents/{filename}"
-        headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        get_res = requests.get(url, headers=headers)
-        data = {"message": f"Auto backup of {filename}", "content": base64.b64encode(content_bytes).decode("utf-8")}
-        if get_res.status_code == 200: data["sha"] = get_res.json().get("sha")
-        requests.put(url, headers=headers, json=data)
-        return True
-    except: return False
-
 # ==========================================
-# ⚙️ PROJECT PROCESS MANAGER (Stable Core)
+# ⚙️ PROJECT PROCESS MANAGER (Stable & Absolute)
 # ==========================================
-def run_script_process(bot_id, filename, owner_id, p_type="bot"):
+def run_script_process(bot_id, filepath, owner_id, p_type="bot"):
+    abs_path = os.path.abspath(filepath)
     if p_type == "web":
-        hosted_processes[bot_id] = {"process": None, "owner_id": owner_id, "filename": filename, "type": "web", "start_time": time.time()}
+        hosted_processes[bot_id] = {"process": None, "owner_id": owner_id, "path": abs_path, "type": "web", "start_time": time.time()}
         return
 
-    script_path = os.path.join(HOST_DIR, filename)
-    log_file_path = os.path.join(LOG_DIR, f"{bot_id}.log")
+    log_file_path = os.path.abspath(os.path.join(LOG_DIR, f"{bot_id}.log"))
     log_out = open(log_file_path, "a", encoding="utf-8")
     
     custom_env = os.environ.copy()
     if owner_id in user_custom_envs: custom_env.update(user_custom_envs[owner_id])
     
-    proc = subprocess.Popen([sys.executable, filename], cwd=HOST_DIR, stdout=log_out, stderr=log_out, env=custom_env, text=True)
-    hosted_processes[bot_id] = {"process": proc, "owner_id": owner_id, "filename": filename, "type": "bot", "start_time": time.time(), "log_file": log_file_path, "retries": hosted_processes.get(bot_id, {}).get("retries", 0)}
+    proc = subprocess.Popen([sys.executable, abs_path], cwd=os.path.dirname(abs_path), stdout=log_out, stderr=log_out, env=custom_env, text=True)
+    hosted_processes[bot_id] = {"process": proc, "owner_id": owner_id, "path": abs_path, "type": "bot", "start_time": time.time(), "log_file": log_file_path, "retries": hosted_processes.get(bot_id, {}).get("retries", 0)}
 
 def stop_script_process(bot_id):
     if bot_id in hosted_processes:
-        proc = hosted_processes[bot_id]["process"]
+        proc = hosted_processes[bot_id].get("process")
         if proc and proc.poll() is None:
             try: proc.terminate(); proc.wait(timeout=2)
             except: proc.kill()
@@ -147,18 +136,18 @@ def auto_healing_monitor():
             if data["type"] != "bot": continue
             proc = data["process"]
             owner_id = data["owner_id"]
-            filename = data["filename"]
+            path = data["path"]
             
-            if psutil and proc.poll() is None:
+            if psutil and proc and proc.poll() is None:
                 try:
                     p = psutil.Process(proc.pid)
-                    if p.cpu_percent(interval=1.0) > 85.0 or p.memory_info().rss > 1024 * 1024 * 1024:
+                    if p.cpu_percent(interval=1.0) > 90.0 or p.memory_info().rss > 1024 * 1024 * 1024:
                         stop_script_process(bot_id)
                         bot.send_message(owner_id, f"🚨 **AUTO-KILL:** `{bot_id}` exceeded CPU/RAM limits!")
                         continue
                 except: pass
 
-            if proc.poll() is not None: 
+            if proc and proc.poll() is not None: 
                 log_path = data.get("log_file", "")
                 missing_pkg = None
                 if os.path.exists(log_path):
@@ -171,13 +160,13 @@ def auto_healing_monitor():
                     bot.send_message(owner_id, f"⚡ **Self-Healing:** Installing `{missing_pkg}` for `{bot_id}`...")
                     try: subprocess.check_call([sys.executable, '-m', 'pip', 'install', PIP_MAP.get(missing_pkg, missing_pkg)])
                     except: pass
-                    run_script_process(bot_id, filename, owner_id, "bot")
+                    run_script_process(bot_id, path, owner_id, "bot")
                 elif data["retries"] < 3:
                     data["retries"] += 1
-                    run_script_process(bot_id, filename, owner_id, "bot")
+                    run_script_process(bot_id, path, owner_id, "bot")
 
 # ==========================================
-# 🎛️ TOTAL 5 UI MENUS
+# 🎛️ UI MENUS
 # ==========================================
 def get_user_menu(user_id):
     m = InlineKeyboardMarkup(row_width=2)
@@ -217,7 +206,7 @@ def get_admin_menu():
     return m
 
 # ==========================================
-# 🚀 CORE DEPLOYMENT WORKFLOW (Step 1)
+# 🚀 CORE DEPLOYMENT WORKFLOW
 # ==========================================
 def process_script_upload(message):
     uid = message.from_user.id
@@ -225,17 +214,17 @@ def process_script_upload(message):
     
     bot_id = generate_bot_id()
     p_type = "bot"
-    filename = ""
+    saved_path = ""
 
-    msg = bot.send_message(message.chat.id, "🔄 **Step 1: Saving Environment...**\n`[██░░░░░░░░] 20%`", parse_mode="Markdown")
+    msg = bot.send_message(message.chat.id, f"🔄 **Step 1: Saving Environment `{bot_id}`...**\n`[██░░░░░░░░] 20%`", parse_mode="Markdown")
 
     if message.text:
         code = message.text
         if "<html>" in code.lower() or "<?php" in code.lower():
-            filename = f"{bot_id}_index.html"; p_type = "web"
+            saved_path = os.path.join(TEMP_DIR, f"{bot_id}_index.html"); p_type = "web"
         else:
-            filename = f"{bot_id}_main.py"; p_type = "bot"
-        with open(os.path.join(TEMP_DIR, filename), "w", encoding="utf-8") as f: f.write(code)
+            saved_path = os.path.join(TEMP_DIR, f"{bot_id}_main.py"); p_type = "bot"
+        with open(saved_path, "w", encoding="utf-8") as f: f.write(code)
     else:
         orig_fn = message.document.file_name
         file_info = bot.get_file(message.document.file_id)
@@ -244,41 +233,39 @@ def process_script_upload(message):
         if orig_fn.endswith('.zip'):
             zip_p = os.path.join(TEMP_DIR, orig_fn)
             with open(zip_p, "wb") as f: f.write(down)
-            with zipfile.ZipFile(zip_p, 'r') as zip_ref: zip_ref.extractall(HOST_DIR)
+            extract_dir = os.path.join(TEMP_DIR, bot_id)
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(zip_p, 'r') as zip_ref: zip_ref.extractall(extract_dir)
             os.remove(zip_p)
             
-            filename = orig_fn.replace('.zip', '.py')
-            possible_mains = ['main.py', 'bot.py', 'app.py']
-            found = False
-            for p in possible_mains:
-                if os.path.exists(os.path.join(HOST_DIR, p)): filename = p; found = True; break
-            if not found: return bot.edit_message_text("❌ `.zip` mein `main.py` ya `bot.py` nahi mila!", message.chat.id, msg.message_id)
-            bot.edit_message_text(f"✅ ZIP Extracted. Identity `{bot_id}` assigned.", message.chat.id, msg.message_id)
-            run_script_process(bot_id, filename, uid, "bot")
-            bot.send_message(message.chat.id, "🎛️ **Manage Options:**", reply_markup=get_control_panel(bot_id, True, "bot"))
-            return
+            main_f = None
+            for root, _, files in os.walk(extract_dir):
+                for f in files:
+                    if f in ['main.py', 'bot.py', 'app.py', 'index.html']:
+                        main_f = os.path.join(root, f)
+            if not main_f: return bot.edit_message_text("❌ `.zip` mein `main.py` ya `index.html` nahi mila!", message.chat.id, msg.message_id)
+            saved_path = main_f
+            p_type = "web" if saved_path.endswith(('.html', '.php')) else "bot"
         else:
             p_type = "web" if orig_fn.endswith(('.html', '.js', '.css', '.php')) else "bot"
-            filename = f"{bot_id}_{orig_fn}"
-            with open(os.path.join(TEMP_DIR, filename), "wb") as f: f.write(down)
+            saved_path = os.path.join(TEMP_DIR, f"{bot_id}_{orig_fn}")
+            with open(saved_path, "wb") as f: f.write(down)
 
-    user_deploy_states[bot_id] = {"uid": uid, "filename": filename, "type": p_type}
+    user_deploy_states[bot_id] = {"uid": uid, "path": saved_path, "type": p_type}
     
     if p_type == "web": 
         threading.Thread(target=finalize_deployment, args=(message.chat.id, msg.message_id, bot_id, "auto")).start()
     else:
         bot.edit_message_text(f"📦 **Identity Assigned:** `{bot_id}`\n\nAb batayein packages (dependencies) kaise install karne hain?", message.chat.id, msg.message_id, parse_mode="Markdown", reply_markup=get_package_menu(bot_id))
 
-# ==========================================
-# ⚙️ INSTALLER WORKFLOW (Step 2)
-# ==========================================
 def finalize_deployment(chat_id, msg_id, bot_id, install_type, manual_req_path=None):
     state = user_deploy_states.get(bot_id)
     if not state: return
-    uid, filename, p_type = state["uid"], state["filename"], state["type"]
+    uid, temp_path, p_type = state["uid"], state["path"], state["type"]
     
-    temp_path = os.path.join(TEMP_DIR, filename)
-    final_path = os.path.join(WEB_DIR if p_type == "web" else HOST_DIR, filename)
+    final_folder = os.path.abspath(os.path.join(WEB_DIR if p_type == "web" else HOST_DIR, bot_id))
+    os.makedirs(final_folder, exist_ok=True)
+    final_path = os.path.join(final_folder, os.path.basename(temp_path))
     shutil.move(temp_path, final_path)
     
     animate_progress(chat_id, msg_id, "Syntax Security Check...", 40)
@@ -298,9 +285,7 @@ def finalize_deployment(chat_id, msg_id, bot_id, install_type, manual_req_path=N
                 subprocess.call([sys.executable, '-m', 'pip', 'install', mod, '--quiet'])
 
     animate_progress(chat_id, msg_id, "Finalizing Execution Sandbox...", 95)
-    run_script_process(bot_id, filename, uid, p_type)
-    
-    if p_type == "bot": backup_file_to_github(filename, open(final_path, 'rb').read())
+    run_script_process(bot_id, final_path, uid, p_type)
     
     bot.edit_message_text(f"🚀 **Deployment 100% Successful!**\n\n📌 **Identity:** `{bot_id}`\n✅ **Status:** LIVE", chat_id, msg_id, parse_mode="Markdown", reply_markup=get_control_panel(bot_id, True, p_type))
 
@@ -351,7 +336,7 @@ def handle_callbacks(call):
         for bot_id, v in hosted_processes.items():
             if v["owner_id"] == uid or is_admin(uid):
                 status = "🟢" if v["type"] == "web" or (v["process"] and v["process"].poll() is None) else "🔴"
-                m.add(InlineKeyboardButton(f"{status} {bot_id} ({v['filename']})", callback_data=f"manage:{bot_id}"))
+                m.add(InlineKeyboardButton(f"{status} {bot_id} ({os.path.basename(v['path'])})", callback_data=f"manage:{bot_id}"))
         m.add(InlineKeyboardButton("🔙 Back", callback_data="main_menu"))
         bot.edit_message_text("🤖 **Managed Bots:**", chat, call.message.message_id, reply_markup=m)
 
@@ -365,9 +350,8 @@ def handle_callbacks(call):
     elif data.startswith("edit_code:"):
         bot_id = data.split(":")[1]
         proj = hosted_processes[bot_id]
-        filepath = os.path.join(HOST_DIR if proj["type"] == "bot" else WEB_DIR, proj["filename"])
         bot.send_message(chat, f"📝 **Instant Edit Mode (`{bot_id}`):**\n\nPaste your new code below. Bot will overwrite and restart instantly.")
-        bot.register_next_step_handler(call.message, lambda m: save_edited_code(m, bot_id, filepath, proj))
+        bot.register_next_step_handler(call.message, lambda m: save_edited_code(m, bot_id, proj))
 
     elif data.startswith("log:"):
         bot_id = data.split(":")[1]
@@ -377,4 +361,19 @@ def handle_callbacks(call):
             with open(log_path, 'r', encoding='utf-8', errors='ignore') as logf: content = logf.read()[-2500:] or content
         m = InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Refresh Logs", callback_data=f"log:{bot_id}"), InlineKeyboardButton("🔙 Back", callback_data=f"manage:{bot_id}"))
         try: bot.edit_message_text(f"📜 **Live Logs (`{bot_id}`):**\n```text\n{content}\n```", chat, call.message.message_id, parse_mode="Markdown", reply_markup=m)
-        except: bot.send_message(chat, f"
+        except: bot.send_message(chat, f"📜 **Live Logs (`{bot_id}`):**\n```text\n{content}\n```", parse_mode="Markdown", reply_markup=m)
+
+    elif data.startswith("stop:"): stop_script_process(data.split(":")[1]); bot.answer_callback_query(call.id, "🛑 Stopped!", show_alert=True)
+    elif data.startswith("start:"): 
+        b_id = data.split(":")[1]; run_script_process(b_id, hosted_processes[b_id]["path"], uid, hosted_processes[b_id]["type"])
+        bot.answer_callback_query(call.id, "▶️ Started!", show_alert=True)
+    elif data.startswith("restart:"): 
+        b_id = data.split(":")[1]; stop_script_process(b_id); run_script_process(b_id, hosted_processes[b_id]["path"], uid, hosted_processes[b_id]["type"])
+        bot.answer_callback_query(call.id, "🔄 Restarted!", show_alert=True)
+        
+    elif data.startswith("del:"): 
+        b_id = data.split(":")[1]
+        proj = hosted_processes.get(b_id)
+        if proj:
+            stop_script_process(b_id)
+     
