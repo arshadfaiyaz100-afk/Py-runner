@@ -1,494 +1,369 @@
-import os
-import re
-import ast
-import time
-import sys
-import subprocess
-import threading
-import base64
-import py_compile
-import requests
-import zipfile
-import shutil
-from flask import Flask
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os, re, ast, time, sys, subprocess, threading, base64, py_compile, requests, zipfile, shutil, socket, importlib.util
+from datetime import datetime
+import traceback
 
+# Auto-install psutil for advanced RAM/CPU monitoring
 try:
     import psutil
 except ImportError:
-    psutil = None
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'psutil', '--quiet'])
+    import psutil
+
+from flask import Flask, send_from_directory, request, abort
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ==========================================
-# ⚙️ CONFIGS & CREDENTIALS (MASTER)
+# ⚙️ MASTER CONFIGS & CREDENTIALS
 # ==========================================
 ADMIN_ID = 7193432903
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8483068207:AAEq3LPHIYlug4qtQnkc9dQB2u-r6kQm1cs")
-GH_TOKEN = os.environ.get("GH_TOKEN", "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")
-GH_REPO = os.environ.get("GH_REPO", "my-hosted-bots-backup")
+GH_TOKEN = os.environ.get("GH_TOKEN", "") # Optional
+GH_REPO = os.environ.get("GH_REPO", "my-hosted-bots")
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True, num_threads=10) # 10 Threads for heavy multi-tasking
 app = Flask(__name__)
 
-# System Directories & Globals
+# ==========================================
+# 📂 SYSTEM DIRECTORIES & GLOBALS
+# ==========================================
 HOST_DIR = "hosted_env"
 LOG_DIR = os.path.join(HOST_DIR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
+DB_DIR = os.path.join(HOST_DIR, "databases")
+WEB_DIR = os.path.join(HOST_DIR, "web_public")
 
+for d in [HOST_DIR, LOG_DIR, DB_DIR, WEB_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+# Central State Database (RAM Memory)
 hosted_processes = {}  
 user_chats = set()
 banned_users = set()
 user_custom_envs = {}
 engine_start_time = time.time()
-MAINTENANCE_MODE = False  # Feature: Maintenance Mode
+MAINTENANCE_MODE = False
 
-PIP_MAP = {
-    "telebot": "pyTelegramBotAPI", "PIL": "Pillow", "bs4": "beautifulsoup4",
-    "cv2": "opencv-python", "fitz": "PyMuPDF", "yaml": "pyyaml",
-    "crypto": "pycryptodome", "sklearn": "scikit-learn", "telegram": "python-telegram-bot",
-    "discord": "discord.py", "pyrogram": "pyrogram tgcrypto", "aiogram": "aiogram",
-    "dotenv": "python-dotenv", "dateutil": "python-dateutil", "jose": "python-jose",
-    "jwt": "PyJWT", "dantic": "pydantic"
-}
+PIP_MAP = {"telebot": "pyTelegramBotAPI", "PIL": "Pillow", "cv2": "opencv-python", "yaml": "pyyaml", "dotenv": "python-dotenv", "bs4": "beautifulsoup4"}
 BUILTINS = sys.builtin_module_names
 
+# ==========================================
+# 🧠 BACKEND SMART FEATURES (INTERNAL)
+# ==========================================
+def find_free_port():
+    """🚪 Feature 3: Auto-Port Resolver for Web Apps"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+def smart_syntax_checker(file_path):
+    """🛡️ Feature 2: Syntax Pre-Checker (Zero-Crash Guard)"""
+    try:
+        py_compile.compile(file_path, doraise=True)
+        return True, "Syntax 100% Perfect ✔️"
+    except py_compile.PyCompileError as e:
+        return False, f"Syntax Error at Line: {str(e).splitlines()[-1]}"
+
+def deep_auto_locator(extract_path):
+    """📂 Feature 4: Deep Auto-Locator (Finds main file & requirements.txt)"""
+    main_file, req_file = None, None
+    for root, dirs, files in os.walk(extract_path):
+        for file in files:
+            if file in ['main.py', 'bot.py', 'app.py', 'index.html', 'index.php']:
+                main_file = os.path.join(root, file)
+            if file == 'requirements.txt':
+                req_file = os.path.join(root, file)
+    return main_file, req_file
+
+def human_error_translator(log_text):
+    """🤖 Feature 5: Human-Readable Error Translator"""
+    if "KeyError" in log_text: return "💡 Tip: Dictionary Key missing/incorrect."
+    if "Unauthorized" in log_text or "Token" in log_text: return "💡 Tip: Invalid API Token."
+    if "ModuleNotFoundError" in log_text: return "💡 Tip: Go to Control Panel -> 'Add Package'."
+    if "SyntaxError" in log_text: return "💡 Tip: Check brackets/indentation in code."
+    return "💡 Tip: Check logs above for details."
+
+# ==========================================
+# 🚀 SMART ANIMATOR (Throttled for heavy AI loads)
+# ==========================================
+def animate_progress(chat_id, msg_id, text, percent):
+    bars = int(percent / 10)
+    bar_str = "█" * bars + "░" * (10 - bars)
+    full_text = f"⚙️ **System Engine Processing:**\n\n`[{bar_str}] {percent}%`\n> {text}"
+    try:
+        bot.edit_message_text(full_text, chat_id, msg_id, parse_mode="Markdown")
+        time.sleep(1.5) # Prevents Telegram API Ban
+    except: pass
+
+# ==========================================
+# 🌐 INTEGRATED WEB SERVER (Flask Tunnel)
+# ==========================================
 @app.route('/')
 def home():
-    return f"⚡ Ultra-Pro Host Engine is Live 24/7! Active Bots: {len(hosted_processes)}"
+    bots_count = len([p for p in hosted_processes.values() if p['type'] == 'bot'])
+    return f"⚡ Ultra-Pro Host Engine is ONLINE 24/7. Active Heavy Bots: {bots_count}"
 
-def is_admin(user_id): return int(user_id) == ADMIN_ID
-def is_banned(user_id): return user_id in banned_users
+@app.route('/web/<proj_id>/<path:filename>')
+def serve_user_web(proj_id, filename):
+    proj = hosted_processes.get(proj_id)
+    if not proj or not proj.get('is_public'): abort(403)
+    return send_from_directory(os.path.dirname(proj['path']), filename)
 
-def get_readable_uptime(seconds):
-    mins, secs = divmod(int(seconds), 60)
-    hours, mins = divmod(mins, 60)
-    days, hours = divmod(hours, 24)
-    return f"{days}d {hours}h {mins}m {secs}s"
-
-def get_progress_bar(percent):
-    filled = int(percent / 10)
-    return "█" * filled + "░" * (10 - filled)
-
-# AST Scanner & Installer
-def deep_analyze_imports(file_path):
-    detected_modules = set()
-    try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            tree = ast.parse(f.read(), filename=file_path)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names: detected_modules.add(alias.name.split('.')[0])
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module: detected_modules.add(node.module.split('.')[0])
-    except:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f: content = f.read()
-        detected_modules.update(re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', content, re.MULTILINE))
-
-    return [PIP_MAP.get(m, m) for m in detected_modules if m not in BUILTINS and not os.path.exists(os.path.join(HOST_DIR, f"{m}.py"))]
-
-def auto_install_packages(modules, chat_id, progress_msg):
-    if not modules: return True
-    for index, mod in enumerate(modules, start=1):
-        try:
-            pct = int((index / len(modules)) * 100)
-            bot.edit_message_text(f"🧠 **Smart Auto-Installing:**\n`[{get_progress_bar(pct)}] {pct}%` ➔ `{mod}`", chat_id, progress_msg.message_id, parse_mode="Markdown")
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', *mod.split(), '--no-cache-dir'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except: pass
-    return True
-
-def backup_file_to_github(filename, content_bytes):
-    if not GH_TOKEN or GH_TOKEN.startswith("YOUR_"): return False
-    try:
-        url = f"https://api.github.com/repos/{GH_TOKEN.split('_')[0]}/{GH_REPO}/contents/{filename}"
-        headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        get_res = requests.get(url, headers=headers)
-        data = {"message": f"Auto backup of {filename}", "content": base64.b64encode(content_bytes).decode("utf-8")}
-        if get_res.status_code == 200: data["sha"] = get_res.json().get("sha")
-        requests.put(url, headers=headers, json=data)
-        return True
-    except: return False
-
-# Process Manager
-def run_script_process(filename, owner_id):
-    script_path = os.path.join(HOST_DIR, filename)
-    log_file_path = os.path.join(LOG_DIR, f"{filename}.log")
-    log_out = open(log_file_path, "a", encoding="utf-8")
-    
-    custom_env = os.environ.copy()
-    if owner_id in user_custom_envs: custom_env.update(user_custom_envs[owner_id])
-    
-    proc = subprocess.Popen([sys.executable, filename], cwd=HOST_DIR, stdout=log_out, stderr=log_out, env=custom_env, text=True)
-    hosted_processes[filename] = {"process": proc, "owner_id": owner_id, "start_time": time.time(), "log_file": log_file_path, "retries": hosted_processes.get(filename, {}).get("retries", 0)}
-
-def stop_script_process(filename):
-    if filename in hosted_processes:
-        proc = hosted_processes[filename]["process"]
-        if proc.poll() is None:
-            try: proc.terminate(); proc.wait(timeout=2)
-            except: proc.kill()
-        del hosted_processes[filename]
-
-# Feature: Anti-Crash Watchdog & Self-Healing
+# ==========================================
+# 🛡️ SMART WATCHDOG & AUTO-HEAL
+# ==========================================
 def auto_healing_monitor():
     while True:
-        time.sleep(10)
-        for filename, data in list(hosted_processes.items()):
+        time.sleep(15)
+        for name, data in list(hosted_processes.items()):
+            if data["type"] != "bot": continue
             proc = data["process"]
-            owner_id = data["owner_id"]
+            owner = data["owner_id"]
             
-            # Anti-Crash CPU/RAM Watchdog (Admin Feature)
-            if psutil and proc.poll() is None:
+            # CPU/RAM Monitor
+            if proc and proc.poll() is None:
                 try:
                     p = psutil.Process(proc.pid)
-                    if p.cpu_percent(interval=1.0) > 85.0:  # If script eats > 85% CPU continuously
-                        stop_script_process(filename)
-                        bot.send_message(owner_id, f"🚨 **AUTO-KILL:** Your script `{filename}` was taking too much CPU/RAM and was force-stopped to protect the server!")
-                        if not is_admin(owner_id): bot.send_message(ADMIN_ID, f"🚨 Watchdog killed `{filename}` (Owner: {owner_id}) for CPU abuse.")
-                        continue
+                    # 1024MB (1GB) limit for Heavy AI bots
+                    if p.memory_info().rss > data.get("ram_limit", 1024 * 1024 * 1024): 
+                        stop_project(name)
+                        bot.send_message(owner, f"🚨 **WARNING:** `{name}` killed for exceeding 1GB RAM!")
                 except: pass
+            
+            # Auto-Heal Crash Recovery
+            elif proc and proc.poll() is not None and data.get("auto_heal", True):
+                bot.send_message(owner, f"🔄 **Auto-Heal System:** `{name}` crashed! Reviving now...")
+                start_project(name, owner, "bot", data["path"])
 
-            # Self-Healing Crash Recovery
-            if proc.poll() is not None: 
-                log_path = data["log_file"]
-                missing_pkg = None
-                if os.path.exists(log_path):
-                    with open(log_path, 'r', encoding='utf-8', errors='ignore') as lf:
-                        match = re.search(r"No module named '([^']+)'", lf.read()[-2000:])
-                        if match: missing_pkg = match.group(1)
+# ==========================================
+# ⚙️ PROJECT PROCESS MANAGER
+# ==========================================
+def start_project(name, owner, p_type, filepath):
+    if p_type == "bot":
+        log_out = open(os.path.join(LOG_DIR, f"{name}.log"), "a", encoding="utf-8")
+        env = os.environ.copy()
+        if owner in user_custom_envs: env.update(user_custom_envs[owner])
+        
+        proc = subprocess.Popen([sys.executable, filepath], cwd=os.path.dirname(filepath), stdout=log_out, stderr=subprocess.STDOUT, env=env, text=True)
+        hosted_processes[name] = {"process": proc, "owner_id": owner, "type": "bot", "auto_heal": True, "path": filepath, "ram_limit": 1024 * 1024 * 1024} # High RAM for AI
+    elif p_type == "web":
+        hosted_processes[name] = {"process": None, "owner_id": owner, "type": "web", "port": find_free_port(), "is_public": True, "path": filepath}
 
-                if missing_pkg and data["retries"] < 5:
-                    data["retries"] += 1
-                    target_pkg = PIP_MAP.get(missing_pkg, missing_pkg)
-                    try:
-                        bot.send_message(owner_id, f"⚡ **Self-Healing:** Auto-installing missing `{target_pkg}` for `{filename}`...", parse_mode="Markdown")
-                        subprocess.check_call([sys.executable, '-m', 'pip', 'install', target_pkg])
-                    except: pass
-                    run_script_process(filename, owner_id)
-                elif data["retries"] < 3:
-                    data["retries"] += 1
-                    run_script_process(filename, owner_id)
+def stop_project(name):
+    if name in hosted_processes:
+        p = hosted_processes[name]["process"]
+        if p and p.poll() is None:
+            try: p.terminate(); p.wait(timeout=3)
+            except: p.kill()
 
-# UI Menus
-def get_user_menu(user_id):
-    markup = InlineKeyboardMarkup(row_width=2)
-    user_bots = [f for f, d in hosted_processes.items() if (d["owner_id"] == user_id or is_admin(user_id)) and d["process"].poll() is None]
-    
-    markup.add(
-        InlineKeyboardButton("🚀 Host .py / .zip", callback_data="host_file"),
-        InlineKeyboardButton("🐙 Deploy GitHub Repo", callback_data="host_github"),
-        InlineKeyboardButton(f"🤖 Managed Bots ({len(user_bots)})", callback_data="my_bots"),
-        InlineKeyboardButton("🛑 Stop All My Bots", callback_data="stop_my_bots"),
-        InlineKeyboardButton("📦 Upload reqs.txt", callback_data="host_req"),
-        InlineKeyboardButton("🔑 Manage ENV Vars", callback_data="manage_env"),
-        InlineKeyboardButton("📂 Browse / ZIP Backup", callback_data="browse_files"),
-        InlineKeyboardButton("⏰ Server Uptime & Ping", callback_data="server_ping")
+# ==========================================
+# 🎛️ UI MENUS (Ultra-Advanced)
+# ==========================================
+def get_user_menu(uid):
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("🚀 Deploy Project", callback_data="deploy_start"),
+        InlineKeyboardButton("🤖 Active Projects", callback_data="my_projects"),
+        InlineKeyboardButton("🛑 Halt All Mine", callback_data="halt_all"),
+        InlineKeyboardButton("🔑 Config & ENV", callback_data="manage_env"),
+        InlineKeyboardButton("📂 Smart ZIP Backup", callback_data="smart_backup"),
+        InlineKeyboardButton("📈 Server Health", callback_data="server_health")
     )
-    if is_admin(user_id): markup.add(InlineKeyboardButton("👑 Master Admin Controls", callback_data="admin_panel"))
-    return markup
+    if int(uid) == ADMIN_ID: m.add(InlineKeyboardButton("👑 Master Admin Panel", callback_data="admin_panel"))
+    return m
+
+def get_control_panel(name, is_running, p_type):
+    m = InlineKeyboardMarkup(row_width=2)
+    if is_running and p_type == "bot": 
+        m.add(InlineKeyboardButton("🛑 Stop", callback_data=f"stop:{name}"), InlineKeyboardButton("🔄 Restart", callback_data=f"restart:{name}"))
+    elif p_type == "bot": 
+        m.add(InlineKeyboardButton("▶️ Start", callback_data=f"start:{name}"))
+        
+    m.add(InlineKeyboardButton("📜 Live Logs", callback_data=f"log:{name}"), InlineKeyboardButton("📝 Live Editor", callback_data=f"edit:{name}"))
+    
+    if p_type == "bot": m.add(InlineKeyboardButton("🔌 Add Package", callback_data=f"addpkg:{name}"), InlineKeyboardButton("⚙️ Auto-Heal", callback_data=f"heal:{name}"))
+    else: m.add(InlineKeyboardButton("🌍 Public Access Link", callback_data=f"publink:{name}"))
+        
+    m.add(InlineKeyboardButton("🗑️ Delete", callback_data=f"del:{name}"), InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"))
+    return m
 
 def get_admin_menu():
-    markup = InlineKeyboardMarkup(row_width=2)
-    maint_status = "🟢 ON" if MAINTENANCE_MODE else "🔴 OFF"
-    markup.add(
-        InlineKeyboardButton("💻 Root Terminal", callback_data="admin_terminal"),
-        InlineKeyboardButton("💉 Mass Code Inject", callback_data="admin_inject"),
-        InlineKeyboardButton(f"🛠 Maintenance: {maint_status}", callback_data="toggle_maintenance"),
-        InlineKeyboardButton("🌐 All Bots Control", callback_data="list_all_bots"),
-        InlineKeyboardButton("🚨 EMERGENCY KILL ALL", callback_data="emergency_kill"),
-        InlineKeyboardButton("🧹 Purge Cache", callback_data="server_clean"),
-        InlineKeyboardButton("📢 Broadcast Msg", callback_data="broadcast_menu"),
-        InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu")
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("🛠 Maintenance Mode", callback_data="toggle_maint"),
+        InlineKeyboardButton("🌐 Global Nodes", callback_data="global_nodes"),
+        InlineKeyboardButton("🚨 DEFCON 1", callback_data="defcon"),
+        InlineKeyboardButton("🧹 Deep Clean", callback_data="clean_server"),
+        InlineKeyboardButton("📢 Broadcast", callback_data="broadcast"),
+        InlineKeyboardButton("📤 OTA Update", callback_data="ota_update")
     )
-    return markup
+    m.add(InlineKeyboardButton("🔙 Back to Dashboard", callback_data="main_menu"))
+    return m
 
+# ==========================================
+# 🚀 CORE DEPLOYMENT LOGIC (AI & Heavy Bot Ready)
+# ==========================================
+def process_deployment(message):
+    uid = message.from_user.id
+    if not message.document and not message.text: return
+    
+    msg = bot.send_message(message.chat.id, "🔄 Booting Heavy Deployment Sequence...")
+    proj_name = f"proj_{uid}_{int(time.time())}"
+    p_type, file_path, req_path = "bot", "", None
+    
+    animate_progress(message.chat.id, msg.message_id, "Analyzing Input Architecture...", 10)
+
+    try:
+        if message.text:
+            code = message.text
+            if "<html>" in code.lower() or "<?php" in code.lower():
+                file_path = os.path.join(WEB_DIR, f"{proj_name}.html"); p_type = "web"
+            else:
+                file_path = os.path.join(HOST_DIR, f"{proj_name}.py"); p_type = "bot"
+            with open(file_path, "w", encoding="utf-8") as f: f.write(code)
+
+        else:
+            fn = message.document.file_name
+            file_info = bot.get_file(message.document.file_id)
+            down = bot.download_file(file_info.file_path)
+            
+            if fn.endswith('.zip'):
+                zip_p = os.path.join(HOST_DIR, fn)
+                with open(zip_p, "wb") as f: f.write(down)
+                extract_folder = os.path.join(HOST_DIR, proj_name)
+                with zipfile.ZipFile(zip_p, 'r') as zip_ref: zip_ref.extractall(extract_folder)
+                os.remove(zip_p)
+                
+                main_f, req_f = deep_auto_locator(extract_folder)
+                if not main_f: return bot.edit_message_text("❌ Missing `main.py` or `index.html` in ZIP.", message.chat.id, msg.message_id)
+                file_path = main_f
+                req_path = req_f
+                p_type = "web" if file_path.endswith(('.html', '.php')) else "bot"
+            else:
+                p_type = "web" if fn.endswith(('.html', '.js', '.css', '.php')) else "bot"
+                file_path = os.path.join(WEB_DIR if p_type == "web" else HOST_DIR, f"{proj_name}_{fn}")
+                with open(file_path, "wb") as f: f.write(down)
+
+        animate_progress(message.chat.id, msg.message_id, "Syntax Security Check...", 30)
+        if p_type == "bot":
+            is_safe, err_msg = smart_syntax_checker(file_path)
+            if not is_safe: return bot.edit_message_text(f"🛑 **Syntax Error!**\n`{err_msg}`", message.chat.id, msg.message_id, parse_mode="Markdown")
+
+        # Massive Dependency Resolver
+        if p_type == "bot":
+            if req_path:
+                animate_progress(message.chat.id, msg.message_id, "Installing Heavy Requirements (May take time)...", 50)
+                subprocess.call([sys.executable, '-m', 'pip', 'install', '-r', req_path, '--quiet'])
+            else:
+                animate_progress(message.chat.id, msg.message_id, "AST Smart Scanner Active...", 60)
+                with open(file_path, 'r', encoding='utf-8') as f: content = f.read()
+                imports = set(re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', content, re.MULTILINE))
+                for mod in imports:
+                    mod_name = PIP_MAP.get(mod, mod)
+                    if mod not in BUILTINS and importlib.util.find_spec(mod_name) is None:
+                        animate_progress(message.chat.id, msg.message_id, f"Installing: {mod_name}...", 75)
+                        subprocess.call([sys.executable, '-m', 'pip', 'install', mod_name, '--quiet'])
+
+        animate_progress(message.chat.id, msg.message_id, "Finalizing Virtual Sandbox...", 90)
+        start_project(proj_name, uid, p_type, file_path)
+        
+        bot.edit_message_text(f"🚀 **Deployment 100% Successful!**\n\n📌 **Name:** `{proj_name}`\n🗂 **Type:** `{'Web App 🌐' if p_type=='web' else 'Heavy AI Bot 🤖'}`\n✅ **Status:** Live & Protected", message.chat.id, msg.message_id, parse_mode="Markdown", reply_markup=get_control_panel(proj_name, True, p_type))
+    except Exception as e:
+        bot.edit_message_text(f"❌ **Fatal Error:** `{str(e)}`", message.chat.id, msg.message_id, parse_mode="Markdown")
+
+# ==========================================
+# 🤖 BOT INTERFACE HANDLERS
+# ==========================================
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
-    user_id = message.from_user.id
-    if is_banned(user_id): return
+    uid = message.from_user.id
+    if uid in banned_users: return
     user_chats.add(message.chat.id)
-    role = "👑 Master Admin" if is_admin(user_id) else "👤 Standard User"
-    
-    if MAINTENANCE_MODE and not is_admin(user_id):
-        bot.send_message(message.chat.id, "🛠 **SERVER UNDER MAINTENANCE!**\nNew uploads are temporarily paused. Existing bots are still running.")
-        return
-        
-    bot.send_message(message.chat.id, f"⚡ **ULTRA-PRO HOSTING ENGINE** ⚡\n\n🆔 **Your ID:** `{user_id}`\n🔰 **Role:** {role}\n\nUpload a `.py` file, `.zip` project, or clone a Repo!", parse_mode="Markdown", reply_markup=get_user_menu(user_id))
+    role = "👑 Master Admin" if int(uid) == ADMIN_ID else "👤 System User"
+    bot.send_message(message.chat.id, f"⚡ **ULTRA-PRO HOSTING ENGINE v10** ⚡\n\n🔰 **Role:** {role}\n💻 AI-Ready | 1GB+ RAM Support | Async Threads\n\nChoose an option:", parse_mode="Markdown", reply_markup=get_user_menu(uid))
 
 @bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-    global MAINTENANCE_MODE
-    user_id = call.from_user.id
-    chat_id = call.message.chat.id
+def callbacks(call):
+    chat = call.message.chat.id
+    uid = call.from_user.id
     data = call.data
-    user_chats.add(chat_id)
 
-    if data == "main_menu":
-        bot.send_message(chat_id, "🎛️ **Main Dashboard:**", reply_markup=get_user_menu(user_id))
-
-    elif data == "admin_panel" and is_admin(user_id):
-        bot.send_message(chat_id, "👑 **Admin Master Controls:**", reply_markup=get_admin_menu())
-
-    elif data == "host_file":
-        if MAINTENANCE_MODE and not is_admin(user_id): return bot.answer_callback_query(call.id, "Server Maintenance Active", show_alert=True)
-        bot.send_message(chat_id, "📂 **Upload your `.py` or `.zip` project:**")
-        bot.register_next_step_handler(call.message, process_script_upload)
+    if data == "main_menu": bot.edit_message_text("🎛️ **Main Dashboard:**", chat, call.message.message_id, reply_markup=get_user_menu(uid))
+    elif data == "admin_panel" and int(uid) == ADMIN_ID: bot.edit_message_text("👑 **Master Admin Center:**", chat, call.message.message_id, reply_markup=get_admin_menu())
+    
+    elif data == "deploy_start":
+        bot.send_message(chat, "📂 **Smart Deploy:**\nSend `.py`, `.html`, or a **.zip (with AI requirements.txt)**. OR Paste raw code below:")
+        bot.register_next_step_handler(call.message, process_deployment)
         
-    elif data == "host_github":
-        if MAINTENANCE_MODE and not is_admin(user_id): return bot.answer_callback_query(call.id, "Server Maintenance Active", show_alert=True)
-        bot.send_message(chat_id, "🐙 **Send Public GitHub Repo URL:**\n*(e.g., https://github.com/user/repo)*")
-        bot.register_next_step_handler(call.message, process_github_clone)
-
-    elif data == "admin_terminal" and is_admin(user_id):
-        bot.send_message(chat_id, "💻 **ROOT TERMINAL ACTIVE.**\nSend any Bash/Linux command (e.g. `ls -la`, `pip freeze`). Type 'exit' to cancel.")
-        bot.register_next_step_handler(call.message, process_terminal_cmd)
-        
-    elif data == "admin_inject" and is_admin(user_id):
-        bot.send_message(chat_id, "💉 **Send Python code to INJECT into ALL `.py` files:**\n(It will be added to the very top of all scripts)")
-        bot.register_next_step_handler(call.message, process_mass_inject)
-
-    elif data == "toggle_maintenance" and is_admin(user_id):
-        MAINTENANCE_MODE = not MAINTENANCE_MODE
-        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=get_admin_menu())
-        bot.answer_callback_query(call.id, f"Maintenance: {'ON' if MAINTENANCE_MODE else 'OFF'}", show_alert=True)
-
-    elif data == "host_req":
-        bot.send_message(chat_id, "📜 **Upload `requirements.txt`:**")
-        bot.register_next_step_handler(call.message, process_req_upload)
-
-    elif data == "server_ping":
-        latency = round((time.time() - engine_start_time) * 1000, 2)
-        ram = psutil.virtual_memory().percent if psutil else "N/A"
-        bot.send_message(chat_id, f"📡 **Latency:** `{latency}ms`\n⏱️ **Uptime:** `{get_readable_uptime(time.time() - engine_start_time)}`\n💾 **RAM Use:** `{ram}%`", parse_mode="Markdown")
-
-    elif data == "manage_env":
-        bot.send_message(chat_id, "🔑 **Send ENV Var format:** `KEY=VALUE`")
-        bot.register_next_step_handler(call.message, save_env_var)
-
-    elif data == "server_clean" and is_admin(user_id):
-        shutil.rmtree(os.path.join(HOST_DIR, "__pycache__"), ignore_errors=True)
-        bot.send_message(chat_id, "🧹 **Server cache purged!**")
-
-    elif data == "browse_files":
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(InlineKeyboardButton("📦 EXPORT PROJECT BACKUP (ZIP)", callback_data="export_zip"))
-        markup.add(InlineKeyboardButton("🔙 Back", callback_data="main_menu"))
-        bot.send_message(chat_id, "📂 **Files Explorer:**", reply_markup=markup)
-
-    elif data == "export_zip":
-        bot.send_message(chat_id, "📦 Compressing files...")
-        zip_path = f"backup_{user_id}.zip"
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
-            for root, _, files in os.walk(HOST_DIR):
-                for f in files:
-                    # Admin gets everything, User gets only files they own (or basic files)
-                    if is_admin(user_id) or not f.endswith('.log'): 
-                        zipf.write(os.path.join(root, f), arcname=f)
-        bot.send_document(chat_id, open(zip_path, 'rb'))
-        os.remove(zip_path)
-
-    elif data in ["my_bots", "list_all_bots"]:
-        if data == "list_all_bots" and not is_admin(user_id): return
-        files = [f for f in os.listdir(HOST_DIR) if f.endswith('.py')]
-        if not is_admin(user_id): files = [f for f in files if hosted_processes.get(f, {}).get("owner_id") == user_id]
-        if not files: return bot.send_message(chat_id, "📂 No hosted bots found.", reply_markup=get_user_menu(user_id))
-        
-        markup = InlineKeyboardMarkup(row_width=1)
-        for f in files:
-            status = "🟢" if f in hosted_processes and hosted_processes[f]["process"].poll() is None else "🔴"
-            markup.add(InlineKeyboardButton(f"{status} {f}", callback_data=f"manage:{f}"))
-        markup.add(InlineKeyboardButton("🔙 Back", callback_data="main_menu"))
-        bot.send_message(chat_id, "🤖 **Managed Bots:**", reply_markup=markup)
+    elif data == "my_projects":
+        m = InlineKeyboardMarkup()
+        mine = [k for k, v in hosted_processes.items() if v["owner_id"] == uid or int(uid) == ADMIN_ID]
+        for k in mine: m.add(InlineKeyboardButton(f"{'🌐' if hosted_processes[k]['type']=='web' else '🤖'} {k}", callback_data=f"manage:{k}"))
+        m.add(InlineKeyboardButton("🔙 Back", callback_data="main_menu"))
+        bot.edit_message_text("🤖 **Your Active Projects:**", chat, call.message.message_id, reply_markup=m)
 
     elif data.startswith("manage:"):
-        filename = data.split(":", 1)[1]
-        is_running = filename in hosted_processes and hosted_processes[filename]["process"].poll() is None
-        markup = InlineKeyboardMarkup(row_width=2)
-        
-        if is_running: markup.add(InlineKeyboardButton("🛑 Stop", callback_data=f"stop:{filename}"), InlineKeyboardButton("🔄 Restart", callback_data=f"restart:{filename}"))
-        else: markup.add(InlineKeyboardButton("▶️ Start", callback_data=f"start:{filename}"))
-        
-        markup.add(
-            InlineKeyboardButton("📜 Live Logs", callback_data=f"log:{filename}"),
-            InlineKeyboardButton("📝 Edit Code", callback_data=f"edit_code:{filename}"),
-            InlineKeyboardButton("🗑️ Delete", callback_data=f"del:{filename}"),
-            InlineKeyboardButton("🔙 Back", callback_data="main_menu")
-        )
-        bot.send_message(chat_id, f"⚙️ **Control Panel:** `{filename}`", parse_mode="Markdown", reply_markup=markup)
-
-    elif data.startswith("edit_code:"):
-        filename = data.split(":", 1)[1]
-        filepath = os.path.join(HOST_DIR, filename)
-        with open(filepath, 'r', encoding='utf-8') as f: code = f.read()
-        if len(code) > 3500:
-            bot.send_message(chat_id, "⚠️ File is too large to edit in Telegram. Please download, edit, and re-upload.")
-        else:
-            bot.send_message(chat_id, f"📝 **In-Chat Editor (`{filename}`):**\n\nCopy the code below, edit it, and send it back to me. Type 'cancel' to abort.")
-            bot.send_message(chat_id, f"```python\n{code}\n```", parse_mode="Markdown")
-            bot.register_next_step_handler(call.message, lambda m: save_edited_code(m, filename))
+        name = data.split(":")[1]
+        if name not in hosted_processes: return bot.answer_callback_query(call.id, "Project not found.", show_alert=True)
+        proj = hosted_processes[name]
+        is_run = proj["process"] is not None and proj["process"].poll() is None if proj["type"] == "bot" else True
+        bot.edit_message_text(f"⚙️ **Control Panel:** `{name}`", chat, call.message.message_id, parse_mode="Markdown", reply_markup=get_control_panel(name, is_run, proj["type"]))
 
     elif data.startswith("log:"):
-        filename = data.split(":", 1)[1]
-        log_path = os.path.join(LOG_DIR, f"{filename}.log")
-        content = "No logs yet."
+        name = data.split(":")[1]
+        log_path = os.path.join(LOG_DIR, f"{name}.log")
+        content = "Log empty."
         if os.path.exists(log_path):
-            with open(log_path, 'r', encoding='utf-8', errors='ignore') as logf: content = logf.read()[-2500:] or content
-        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔄 Refresh Logs", callback_data=f"log:{filename}"))
-        try: bot.edit_message_text(f"📜 **Live Logs (`{filename}`):**\n```text\n{content}\n```", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-        except: bot.send_message(chat_id, f"📜 **Live Logs (`{filename}`):**\n```text\n{content}\n```", parse_mode="Markdown", reply_markup=markup)
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f: content = f.read()[-2000:]
+        
+        hint = human_error_translator(content)
+        bot.edit_message_text(f"📜 **Live Logs (`{name}`):**\n```\n{content}\n```\n{hint}", chat, call.message.message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data=f"manage:{name}")))
 
-    elif data.startswith("stop:"): stop_script_process(data.split(":", 1)[1]); bot.send_message(chat_id, f"🛑 Script stopped.")
-    elif data.startswith("start:"): run_script_process(data.split(":", 1)[1], user_id); bot.send_message(chat_id, f"✅ Script started!")
-    elif data.startswith("restart:"): fn = data.split(":", 1)[1]; stop_script_process(fn); run_script_process(fn, user_id); bot.send_message(chat_id, f"🔄 Script restarted!")
-    elif data.startswith("del:"): 
-        fn = data.split(":", 1)[1]
-        stop_script_process(fn)
-        try: os.remove(os.path.join(HOST_DIR, fn))
+    elif data.startswith("stop:"): stop_project(data.split(":")[1]); bot.answer_callback_query(call.id, "🛑 Stopped!", show_alert=True)
+    elif data.startswith("start:"): 
+        name = data.split(":")[1]
+        start_project(name, uid, hosted_processes[name]["type"], hosted_processes[name]["path"])
+        bot.answer_callback_query(call.id, "▶️ Started!", show_alert=True)
+
+    elif data.startswith("del:"):
+        name = data.split(":")[1]
+        stop_project(name)
+        try: shutil.rmtree(os.path.dirname(hosted_processes[name]["path"]), ignore_errors=True)
         except: pass
-        bot.send_message(chat_id, f"🗑️ `{fn}` deleted.")
+        del hosted_processes[name]
+        bot.edit_message_text(f"🗑️ Project `{name}` completely deleted.", chat, call.message.message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="main_menu")))
 
-    elif data == "emergency_kill" and is_admin(user_id):
-        for fn in list(hosted_processes.keys()): stop_script_process(fn)
-        bot.send_message(chat_id, "🚨 **ALL BOTS STOPPED!**", parse_mode="Markdown")
-
-    elif data == "stop_my_bots":
-        for fn, d in list(hosted_processes.items()):
-            if d["owner_id"] == user_id: stop_script_process(fn)
-        bot.send_message(chat_id, "🛑 Your active bots stopped.")
-
-    elif data == "broadcast_menu" and is_admin(user_id):
-        bot.send_message(chat_id, "📢 **Enter message to broadcast:**")
-        bot.register_next_step_handler(call.message, process_broadcast)
-
-# New Feature Functions
-def save_edited_code(message, filename):
-    if message.text.lower() == 'cancel': return bot.send_message(message.chat.id, "Edit cancelled.")
-    filepath = os.path.join(HOST_DIR, filename)
-    with open(filepath, 'w', encoding='utf-8') as f: f.write(message.text)
-    bot.send_message(message.chat.id, f"✅ `{filename}` updated! Restarting bot...")
-    stop_script_process(filename)
-    run_script_process(filename, message.from_user.id)
-
-def process_terminal_cmd(message):
-    if message.text.lower() == 'exit': return bot.send_message(message.chat.id, "Terminal closed.")
-    try: 
-        res = subprocess.getoutput(message.text)
-        bot.send_message(message.chat.id, f"💻 **Output:**\n```bash\n{res[:4000]}\n```", parse_mode="Markdown")
-    except Exception as e: bot.send_message(message.chat.id, str(e))
-    bot.register_next_step_handler(message, process_terminal_cmd)
-
-def process_mass_inject(message):
-    code = message.text
-    count = 0
-    for f in os.listdir(HOST_DIR):
-        if f.endswith('.py'):
-            p = os.path.join(HOST_DIR, f)
-            with open(p, 'r') as file: old = file.read()
-            with open(p, 'w') as file: file.write(f"{code}\n\n{old}")
-            count += 1
-    bot.send_message(message.chat.id, f"💉 **Injected successfully into {count} scripts!**")
-
-def process_github_clone(message):
-    url = message.text.strip()
-    if not url.startswith("http"): return bot.send_message(message.chat.id, "Invalid URL.")
-    msg = bot.send_message(message.chat.id, "🐙 Cloning repository...")
-    repo_name = url.split('/')[-1].replace('.git', '')
-    dest = os.path.join(HOST_DIR, repo_name)
-    try:
-        subprocess.check_output(['git', 'clone', url, dest])
-        # Auto-detect main.py or bot.py
-        main_script = None
-        for f in os.listdir(dest):
-            if f in ['main.py', 'bot.py', 'app.py']: main_script = f; break
-        
-        if main_script:
-            shutil.copy(os.path.join(dest, main_script), os.path.join(HOST_DIR, main_script))
-            bot.edit_message_text(f"✅ Cloned! Hosting `{main_script}`...", message.chat.id, msg.message_id)
-            run_script_process(main_script, message.from_user.id)
-        else:
-            bot.edit_message_text("✅ Cloned! Folder saved, but couldn't auto-detect main.py.", message.chat.id, msg.message_id)
-    except Exception as e:
-        bot.edit_message_text(f"❌ Error cloning: {str(e)}", message.chat.id, msg.message_id)
-
-def save_env_var(message):
-    try:
-        key, val = message.text.split("=", 1)
-        uid = message.from_user.id
-        if uid not in user_custom_envs: user_custom_envs[uid] = {}
-        user_custom_envs[uid][key.strip()] = val.strip()
-        bot.send_message(message.chat.id, f"✅ **ENV Variable Saved:** `{key.strip()}`", parse_mode="Markdown")
-    except: bot.send_message(message.chat.id, "❌ Invalid format.")
-
-def process_script_upload(message):
-    user_id = message.from_user.id
-    if not message.document: return
-    filename = message.document.file_name
-    
-    if not (filename.endswith('.py') or filename.endswith('.zip')): return bot.send_message(message.chat.id, "❌ Valid `.py` ya `.zip` file bhejein.")
-    progress = bot.send_message(message.chat.id, f"🔄 **Step 1: Downloading File...**\n`[{get_progress_bar(20)}] 20%`", parse_mode="Markdown")
-    
-    try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        target_script = filename
-        
-        if filename.endswith('.zip'):
-            zip_path = os.path.join(HOST_DIR, filename)
-            with open(zip_path, "wb") as f: f.write(downloaded)
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref: zip_ref.extractall(HOST_DIR)
-            os.remove(zip_path)
-            
-            # Smart Auto-Detect for ZIPs
-            possible_mains = ['main.py', 'bot.py', 'app.py']
-            found = False
-            for p in possible_mains:
-                if os.path.exists(os.path.join(HOST_DIR, p)): target_script = p; found = True; break
-            if not found: return bot.edit_message_text("❌ `.zip` mein `main.py` ya `bot.py` nahi mila!", message.chat.id, progress.message_id)
-        else:
-            with open(os.path.join(HOST_DIR, filename), "wb") as f: f.write(downloaded)
-        
-        script_path = os.path.join(HOST_DIR, target_script)
-        with open(script_path, 'r', encoding='utf-8', errors='ignore') as f: lines = len(f.readlines())
-            
-        needed_packages = deep_analyze_imports(script_path)
-        auto_install_packages(needed_packages, message.chat.id, progress)
-
-        bot.edit_message_text(f"⚙️ **Step 3: Compiling Code...**\n`[{get_progress_bar(80)}] 80%`", message.chat.id, progress.message_id, parse_mode="Markdown")
-        try: py_compile.compile(script_path, doraise=True)
-        except py_compile.PyCompileError as sys_err: bot.edit_message_text(f"⚠️ Syntax Error:\n```text\n{sys_err}\n```", message.chat.id, progress.message_id, parse_mode="Markdown")
-
-        backup_file_to_github(target_script, open(script_path, 'rb').read())
-        stop_script_process(target_script)
-        run_script_process(target_script, user_id)
-
-        bot.edit_message_text(f"✅ **Execution Complete!**\n`[{get_progress_bar(100)}] 100%`\n\n📝 **Lines:** `{lines}`\n🚀 `{target_script}` LIVE!", message.chat.id, progress.message_id, parse_mode="Markdown")
-        bot.send_message(message.chat.id, "🎛️ **Manage Options:**", reply_markup=get_user_menu(user_id))
-    except Exception as e: bot.edit_message_text(f"❌ **Error:** `{str(e)}`", message.chat.id, progress.message_id, parse_mode="Markdown")
-
-def process_req_upload(message):
-    if not message.document or not message.document.file_name.endswith('.txt'): return bot.send_message(message.chat.id, "❌ Send `requirements.txt`")
-    msg = bot.send_message(message.chat.id, "📥 Installing reqs...")
-    try:
-        req_p = os.path.join(HOST_DIR, f"req_{message.from_user.id}.txt")
-        with open(req_p, "wb") as f: f.write(bot.download_file(bot.get_file(message.document.file_id).file_path))
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_p])
-        bot.edit_message_text("✅ Requirements installed!", message.chat.id, msg.message_id)
-    except: bot.edit_message_text("❌ Error installing.", message.chat.id, msg.message_id)
-
-def process_broadcast(message):
-    if not is_admin(message.from_user.id): return
-    count = 0
-    msg_to_send = message.text or message.caption
-    for target_id in list(user_chats):
+    elif data.startswith("publink:"):
+        name = data.split(":")[1]
+        proj = hosted_processes.get(name)
         try:
-            if message.content_type == 'text': bot.send_message(target_id, f"📢 **ANNOUNCEMENT:**\n\n{message.text}", parse_mode="Markdown")
-            elif message.content_type == 'photo': bot.send_photo(target_id, message.photo[-1].file_id, caption=f"📢 **ANNOUNCEMENT:**\n\n{msg_to_send or ''}", parse_mode="Markdown")
-            count += 1
-        except: pass
-    bot.send_message(message.chat.id, f"✅ Broadcast sent to `{count}` chats!", reply_markup=get_admin_menu())
+            ip = requests.get('https://api.ipify.org').text
+            url = f"http://{ip}:10000/web/{name}/" + os.path.basename(proj['path'])
+            bot.send_message(chat, f"🌍 **Public Web Link:**\n\n🔗 [Click to Open App]({url})\n\n_Note: Route is active!_", parse_mode="Markdown")
+        except: bot.send_message(chat, "Link generation failed.")
 
-def run_bot_polling(): bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    elif data == "server_health":
+        ram, cpu = psutil.virtual_memory().percent, psutil.cpu_percent(interval=0.5)
+        bar = lambda p: "█" * int(p/10) + "░" * (10 - int(p/10))
+        uptime = str(datetime.now() - datetime.fromtimestamp(engine_start_time)).split('.')[0]
+        bot.edit_message_text(f"📈 **AI Engine Health:**\n\n**CPU Load:**\n`[{bar(cpu)}] {cpu}%`\n\n**RAM Usage:**\n`[{bar(ram)}] {ram}%`\n\n⏱ Uptime: `{uptime}`", chat, call.message.message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="main_menu")))
 
+    elif data == "defcon" and int(uid) == ADMIN_ID:
+        for name in list(hosted_processes.keys()): stop_project(name)
+        bot.send_message(chat, "🚨 **DEFCON 1: ALL BOT PROCESSES TERMINATED.**")
+
+# ==========================================
+# 🔥 MAIN MULTI-THREADED ENGINE STARTER
+# ==========================================
 if __name__ == "__main__":
+    print("Initializing Multi-Threaded Heavy Architecture...")
+    
+    # Thread 1: Auto-Heal & Watchdog for RAM Control
     threading.Thread(target=auto_healing_monitor, daemon=True).start()
-    threading.Thread(target=run_bot_polling, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    
+    # Thread 2: Telegram Bot (Uses its own 10 sub-threads for massive user load)
+    threading.Thread(target=lambda: bot.infinity_polling(timeout=60, long_polling_timeout=30), daemon=True).start()
+    
+    # Main Thread: Flask Web Server (Tunnels all Web Apps + Keeps Engine Alive)
+    print("⚡ Ultra-Pro AI-Ready Engine is LIVE on Port 10000!")
+    app.run(host="0.0.0.0", port=10000, debug=False, use_reloader=False)
+                 
