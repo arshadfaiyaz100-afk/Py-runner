@@ -1,22 +1,11 @@
-# ==========================================
-# ⚡ CORE HOSTING ENGINE DEPENDENCIES
-# ==========================================
 pyTelegramBotAPI
 Flask
 requests
 psutil
 Werkzeug
 gunicorn
-
-# ==========================================
-# 🚀 MTPROTO LIMIT BYPASS (2GB SUPPORT)
-# ==========================================
 pyrogram
 tgcrypto
-
-# ==========================================
-# 🧠 PRE-INSTALLED HEAVY LIBRARIES & AI
-# ==========================================
 Pillow
 beautifulsoup4
 opencv-python
