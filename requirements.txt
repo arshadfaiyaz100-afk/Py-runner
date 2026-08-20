@@ -1,31 +1,38 @@
+# ==========================================
+# ⚡ CORE HOSTING ENGINE DEPENDENCIES
+# ==========================================
 pyTelegramBotAPI
 Flask
 requests
 psutil
 Werkzeug
 gunicorn
-numpy
-pandas
-scikit-learn
-scipy
-matplotlib
-beautifulsoup4
-opencv-python
-Pillow
-lxml
-python-dotenv
-PyMySQL
-pymongo
-cryptography
-pydantic
-pyyaml
-PyMuPDF
-pycryptodome
-python-telegram-bot
-discord.py
+
+# ==========================================
+# 🚀 MTPROTO LIMIT BYPASS (2GB SUPPORT)
+# ==========================================
 pyrogram
 tgcrypto
+
+# ==========================================
+# 🧠 PRE-INSTALLED HEAVY LIBRARIES & AI
+# ==========================================
+Pillow
+beautifulsoup4
+opencv-python
+PyMuPDF
+pyyaml
+pycryptodome
+scikit-learn
+python-telegram-bot
+discord.py
 aiogram
+python-dotenv
 python-dateutil
 python-jose
 PyJWT
+pydantic
+numpy
+pandas
+torch
+tensorflow
