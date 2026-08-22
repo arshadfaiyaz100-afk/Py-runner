@@ -56,7 +56,7 @@ except ImportError:
 ADMIN_ID = 7193432903
 # Secrets are intentionally read from the environment instead of being hard-coded.
 # Set BOT_TOKEN / GH_TOKEN to the credentials you want this engine to use.
-BOT_TOKEN = "8306948879:AAFSOqqffComXmZpuOlfxWLeM7Gbw9efs_U"
+BOT_TOKEN = "8483068207:AAEq3LPHIYlug4qtQnkc9dQB2u-r6kQm1cs"
 GLOBAL_API_ID = int(os.environ.get("GLOBAL_API_ID", "29387151"))
 GLOBAL_API_HASH = "1d70091141dda904d82684938d444473"
 
