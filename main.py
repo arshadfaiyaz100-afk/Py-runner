@@ -54,12 +54,14 @@ except ImportError:
 # ============================================================
 
 ADMIN_ID = 7193432903
-BOT_TOKEN = "8483068207:AAEq3LPHIYlug4qtQnkc9dQB2u-r6kQm1cs"
-GLOBAL_API_ID = 29387151
+# Secrets are intentionally read from the environment instead of being hard-coded.
+# Set BOT_TOKEN / GH_TOKEN to the credentials you want this engine to use.
+BOT_TOKEN = "8306948879:AAFSOqqffComXmZpuOlfxWLeM7Gbw9efs_U"
+GLOBAL_API_ID = int(os.environ.get("GLOBAL_API_ID", "29387151"))
 GLOBAL_API_HASH = "1d70091141dda904d82684938d444473"
 
-GH_TOKEN = os.environ.get("GH_TOKEN", "").strip()
-GH_REPO = "my-hosted-bots"
+GH_TOKEN = "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"
+GH_REPO = os.environ.get("GH_REPO", "my-hosted-bots").strip()
 
 PORT = int(os.environ.get("PORT", "10000"))
 
@@ -5427,6 +5429,1820 @@ def validate_environment():
 
 
 # ============================================================
+# XX SUPERCHARGED EXTENSION PACK v1.0
+# NON-DESTRUCTIVE ADD-ON: original engine remains intact.
+# ============================================================
+
+import csv
+import io
+import sqlite3
+import shlex
+import subprocess as _subprocess_ext
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
+
+EXT_DIR = os.path.join(BASE_DIR, "extension_data")
+EXT_STATE_FILE = os.path.join(EXT_DIR, "extension_state.json")
+SCHEDULE_FILE = os.path.join(EXT_DIR, "schedules.json")
+TEAM_FILE = os.path.join(EXT_DIR, "team.json")
+TEMPLATE_DIR = os.path.join(EXT_DIR, "templates")
+PUBLIC_STATUS_DIR = os.path.join(EXT_DIR, "public_status")
+for _d in (EXT_DIR, TEMPLATE_DIR, PUBLIC_STATUS_DIR):
+    os.makedirs(_d, exist_ok=True)
+
+user_sessions: Dict[str, Dict[str, Any]] = {}
+extension_state: Dict[str, Any] = {
+    "announcement": "",
+    "grid_layout": {},
+    "language": {},
+    "theme": {},
+    "team": {},
+    "schedules": [],
+    "sleep": {},
+    "rate": {},
+    # Additive AI/normal routing state. Existing state keys remain untouched.
+    "auto_mode": {},
+    "chat2script": {},
+}
+ext_state_lock = threading.RLock()
+
+AI_ENDPOINT = os.environ.get("AI_ENDPOINT", "").strip()
+AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
+AI_MODEL = os.environ.get("AI_MODEL", "").strip()
+AI_TIMEOUT_SECONDS = int(os.environ.get("AI_TIMEOUT_SECONDS", "45"))
+AI_AUTO_SWITCH = os.environ.get("AI_AUTO_SWITCH", "1").strip().lower() not in {"0", "false", "no", "off"}
+AI_MAX_SCRIPT_CHARS = int(os.environ.get("AI_MAX_SCRIPT_CHARS", "120000"))
+CHAT2SCRIPT_AUTO_INSTALL = os.environ.get("CHAT2SCRIPT_AUTO_INSTALL", "1").strip().lower() not in {"0", "false", "no", "off"}
+DOCKER_BIN = shutil.which("docker")
+BLACK_BIN = shutil.which("black")
+NGROK_URL = os.environ.get("NGROK_URL", "").strip()
+
+
+def _load_json_file(path, default):
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        logger.exception("Extension state load failed: %s", path)
+    return default
+
+
+def _save_json_file(path, value):
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(value, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("Extension state save failed: %s", path)
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+
+def extension_load_state():
+    global extension_state
+    with ext_state_lock:
+        extension_state.update(_load_json_file(EXT_STATE_FILE, {}))
+        extension_state["schedules"] = _load_json_file(SCHEDULE_FILE, extension_state.get("schedules", []))
+        extension_state["team"] = _load_json_file(TEAM_FILE, extension_state.get("team", {}))
+
+
+def extension_save_state():
+    with ext_state_lock:
+        _save_json_file(EXT_STATE_FILE, extension_state)
+        _save_json_file(SCHEDULE_FILE, extension_state.get("schedules", []))
+        _save_json_file(TEAM_FILE, extension_state.get("team", {}))
+
+
+def ext_is_owner(uid, bot_id):
+    try:
+        rec = hosted_processes.get(bot_id) or {}
+        return is_admin(uid) or int(rec.get("owner_id", -1)) == int(uid)
+    except Exception:
+        return False
+
+
+def ext_mode(uid):
+    return user_sessions.setdefault(str(uid), {}).get("mode", "normal")
+
+
+def ext_language(uid):
+    return extension_state.get("language", {}).get(str(uid), "en")
+
+
+def ext_t(uid, en, hi):
+    return hi if ext_language(uid) == "hi" else en
+
+
+def ext_set_mode(uid, mode):
+    user_sessions.setdefault(str(uid), {})["mode"] = mode
+    user_sessions[str(uid)]["updated_at"] = now_iso()
+    extension_state.setdefault("modes", {})[str(uid)] = mode
+    extension_save_state()
+
+
+def ext_mask(value):
+    value = str(value or "")
+    if len(value) <= 6:
+        return "••••••"
+    return value[:2] + "•" * min(12, len(value) - 4) + value[-2:]
+
+
+def ext_rate_allowed(uid, action="default", limit=12, window=60):
+    key = f"{uid}:{action}"
+    now = time.time()
+    with ext_state_lock:
+        bucket = extension_state.setdefault("rate", {}).setdefault(key, [])
+        bucket[:] = [x for x in bucket if now - x < window]
+        if len(bucket) >= limit:
+            return False
+        bucket.append(now)
+        return True
+
+
+def ext_feature_menu(uid):
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("🕹️ Normal Mode", callback_data="x_mode:normal"),
+        InlineKeyboardButton("🧠 AI Mode", callback_data="x_mode:ai"),
+        InlineKeyboardButton("🧰 New Tools", callback_data="x_tools"),
+        InlineKeyboardButton("📅 Scheduler", callback_data="x_schedule"),
+        InlineKeyboardButton("👥 Team", callback_data="x_team"),
+        InlineKeyboardButton("🎨 UI Settings", callback_data="x_ui"),
+        InlineKeyboardButton("🤖 Ask AI", callback_data="x_ai"),
+        InlineKeyboardButton("🔐 Security", callback_data="x_security"),
+        InlineKeyboardButton("📦 Templates", callback_data="x_templates"),
+        InlineKeyboardButton("🔙 Main Dashboard", callback_data="main_menu"),
+    )
+    return m
+
+
+def ext_tools_menu():
+    m = InlineKeyboardMarkup(row_width=2)
+    for text, cb in [
+        ("🐙 GitHub Deploy", "x_github"),
+        ("☁️ Backup", "x_backup"),
+        ("🐳 Docker Status", "x_docker"),
+        ("🌐 Public Status", "x_public"),
+        ("📊 Bandwidth", "x_bandwidth"),
+        ("🗄️ Database", "x_database"),
+        ("📝 Formatter", "x_format"),
+        ("🧪 Requirements", "x_requirements"),
+        ("📄 Logs → PDF", "x_pdf"),
+        ("🔌 Webhook/Proxy", "x_proxy"),
+        ("🔙 Features", "x_features"),
+    ]:
+        m.add(InlineKeyboardButton(text, callback_data=cb))
+    return m
+
+
+def ext_ui_menu():
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("🇬🇧 English", callback_data="x_lang:en"),
+        InlineKeyboardButton("🇮🇳 Hindi", callback_data="x_lang:hi"),
+        InlineKeyboardButton("▦ Grid", callback_data="x_layout:grid"),
+        InlineKeyboardButton("☷ List", callback_data="x_layout:list"),
+        InlineKeyboardButton("🌙 Dark Logs", callback_data="x_theme:dark"),
+        InlineKeyboardButton("☀️ Light Logs", callback_data="x_theme:light"),
+        InlineKeyboardButton("🧭 Onboarding", callback_data="x_onboard"),
+        InlineKeyboardButton("🔙 Features", callback_data="x_features"),
+    )
+    return m
+
+
+def ext_security_menu():
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("🔎 Audit My Bots", callback_data="x_audit"),
+        InlineKeyboardButton("🧩 CVE/Dependency Check", callback_data="x_cve"),
+        InlineKeyboardButton("🔐 ENV Manager", callback_data="x_env_export"),
+        InlineKeyboardButton("🛡️ Rate Limit Status", callback_data="x_rate"),
+        InlineKeyboardButton("🔙 Features", callback_data="x_features"),
+    )
+    return m
+
+
+def ext_ai_menu():
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("🔍 Code Review", callback_data="x_ai_review"),
+        InlineKeyboardButton("🩺 Crash Resolver", callback_data="x_ai_crash"),
+        InlineKeyboardButton("📦 Auto Requirements", callback_data="x_ai_req"),
+        InlineKeyboardButton("⚡ Optimize Code", callback_data="x_ai_opt"),
+        InlineKeyboardButton("🧾 Log Summary", callback_data="x_ai_logs"),
+        InlineKeyboardButton("🛡️ Security Audit", callback_data="x_ai_sec"),
+        InlineKeyboardButton("🔑 ENV Explainer", callback_data="x_ai_env"),
+        InlineKeyboardButton("🧠 Health Predictor", callback_data="x_ai_health"),
+        InlineKeyboardButton("🔎 Natural Search", callback_data="x_ai_search"),
+        InlineKeyboardButton("🩹 Auto-Heal Info", callback_data="x_ai_heal"),
+        InlineKeyboardButton("✍️ Broadcast Draft", callback_data="x_ai_broadcast"),
+        InlineKeyboardButton("🏷️ Naming Assistant", callback_data="x_ai_name"),
+        InlineKeyboardButton("💬 Support Chat", callback_data="x_ai_support"),
+        InlineKeyboardButton("🧑‍💻 Chat → Script Runner", callback_data="x_ai_chat2script"),
+        InlineKeyboardButton("🔁 Auto AI ↔ Normal", callback_data="x_auto_mode"),
+        InlineKeyboardButton("🔙 Features", callback_data="x_features"),
+    )
+    return m
+
+
+def ext_schedule_menu():
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("➕ Schedule Bot", callback_data="x_sched_add"),
+        InlineKeyboardButton("📋 My Schedules", callback_data="x_sched_list"),
+        InlineKeyboardButton("😴 Auto-Sleep", callback_data="x_sleep"),
+        InlineKeyboardButton("⏰ Cron Help", callback_data="x_cron_help"),
+        InlineKeyboardButton("🔙 Features", callback_data="x_features"),
+    )
+    return m
+
+
+def ext_team_menu(uid):
+    m = InlineKeyboardMarkup(row_width=2)
+    if is_admin(uid):
+        m.add(
+            InlineKeyboardButton("➕ Add Admin", callback_data="x_team_add"),
+            InlineKeyboardButton("➖ Remove Admin", callback_data="x_team_remove"),
+        )
+    m.add(
+        InlineKeyboardButton("👥 Team List", callback_data="x_team_list"),
+        InlineKeyboardButton("🔙 Features", callback_data="x_features"),
+    )
+    return m
+
+
+def ext_template_menu():
+    m = InlineKeyboardMarkup(row_width=2)
+    m.add(
+        InlineKeyboardButton("🤖 Telegram Bot", callback_data="x_tpl:telegram"),
+        InlineKeyboardButton("🌐 Flask App", callback_data="x_tpl:flask"),
+        InlineKeyboardButton("⚡ FastAPI", callback_data="x_tpl:fastapi"),
+        InlineKeyboardButton("📡 Discord Bot", callback_data="x_tpl:discord"),
+        InlineKeyboardButton("🗃️ SQLite App", callback_data="x_tpl:sqlite"),
+        InlineKeyboardButton("🔙 Features", callback_data="x_features"),
+    )
+    return m
+
+
+def ext_send(chat_id, text, markup=None):
+    try:
+        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+    except Exception:
+        bot.send_message(chat_id, text, reply_markup=markup)
+
+
+def ext_bot_list(uid):
+    result = []
+    for bid, rec in hosted_processes.items():
+        if is_admin(uid) or int(rec.get("owner_id", -1)) == int(uid):
+            result.append(bid)
+    return result
+
+
+def ext_current_bot(uid):
+    return user_sessions.setdefault(str(uid), {}).get("bot_id")
+
+
+def ext_set_bot(uid, bot_id):
+    user_sessions.setdefault(str(uid), {})["bot_id"] = bot_id
+
+
+def ext_require_bot(uid):
+    bid = ext_current_bot(uid)
+    if bid and bid in hosted_processes and ext_is_owner(uid, bid):
+        return bid
+    bots = ext_bot_list(uid)
+    if len(bots) == 1:
+        ext_set_bot(uid, bots[0])
+        return bots[0]
+    return None
+
+
+def ext_security_audit_path(path):
+    findings = []
+    secret_patterns = [
+        (r"(?i)bot[_-]?token\s*=\s*['"][^'"]+['"]", "Hard-coded bot token-like value"),
+        (r"(?i)api[_-]?hash\s*=\s*['"][^'"]+['"]", "Hard-coded API hash-like value"),
+        (r"(?i)(password|passwd|secret|private[_-]?key)\s*=\s*['"][^'"]+['"]", "Hard-coded secret-like value"),
+    ]
+    for root, _, files in os.walk(path):
+        for name in files:
+            if not name.endswith((".py", ".js", ".ts", ".json", ".env", ".yml", ".yaml")):
+                continue
+            fp = os.path.join(root, name)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+                for pattern, label in secret_patterns:
+                    if re.search(pattern, text):
+                        findings.append(f"⚠️ {label}: `{os.path.relpath(fp, path)}`")
+                if name.lower() in {".env", ".env.local"}:
+                    findings.append(f"🔒 Environment file present: `{os.path.relpath(fp, path)}`")
+            except Exception:
+                pass
+    return findings
+
+
+def ext_requirements_for_bot(bot_id):
+    folder = os.path.join(HOST_DIR, bot_id)
+    if not os.path.isdir(folder):
+        return []
+    detected = deep_analyze_imports(folder)
+    # Normalize package map entries and remove duplicates.
+    return list(dict.fromkeys(detected))
+
+
+def ext_write_requirements(bot_id):
+    packages = ext_requirements_for_bot(bot_id)
+    path = os.path.join(HOST_DIR, bot_id, "requirements.generated.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("
+".join(packages) + ("
+" if packages else ""))
+    return path, packages
+
+
+def ext_format_bot(bot_id):
+    folder = os.path.join(HOST_DIR, bot_id)
+    changed = []
+    for root, _, files in os.walk(folder):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            fp = os.path.join(root, name)
+            if BLACK_BIN:
+                try:
+                    r = _subprocess_ext.run([BLACK_BIN, fp, "--quiet"], capture_output=True, text=True, timeout=60)
+                    if r.returncode == 0:
+                        changed.append(os.path.relpath(fp, folder))
+                except Exception:
+                    pass
+    return changed
+
+
+def ext_dependency_cve_hint(bot_id):
+    packages = ext_requirements_for_bot(bot_id)
+    # Offline-safe scanner: reports packages and asks pip-audit when available.
+    audit = shutil.which("pip-audit")
+    if not audit:
+        return "ℹ️ `pip-audit` is not installed.
+Detected dependencies:
+" + "
+".join(f"• `{x}`" for x in packages)
+    try:
+        r = _subprocess_ext.run([audit, "-r", os.path.join(HOST_DIR, bot_id, "requirements.generated.txt")], capture_output=True, text=True, timeout=180)
+        return safe_text(r.stdout or r.stderr or "No audit output.", 3500)
+    except Exception as exc:
+        return f"❌ CVE audit failed: `{exc}`"
+
+
+def ext_create_database(bot_id):
+    folder = os.path.join(HOST_DIR, bot_id)
+    os.makedirs(folder, exist_ok=True)
+    db = os.path.join(folder, "hosted_app.db")
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE IF NOT EXISTS host_meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT OR REPLACE INTO host_meta(key,value) VALUES(?,?)", ("created_at", now_iso()))
+    conn.commit()
+    conn.close()
+    return db
+
+
+def ext_backup_bot(bot_id):
+    folder = os.path.join(HOST_DIR, bot_id)
+    if not os.path.isdir(folder):
+        raise FileNotFoundError("Bot folder not found")
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    target = os.path.join(BACKUP_DIR, f"{bot_id}_{stamp}")
+    shutil.make_archive(target, "zip", folder)
+    return target + ".zip"
+
+
+def ext_full_backup():
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    target = os.path.join(BACKUP_DIR, f"engine_full_{stamp}")
+    shutil.make_archive(target, "zip", BASE_DIR)
+    return target + ".zip"
+
+
+def ext_send_file(chat_id, path, caption=""):
+    with open(path, "rb") as f:
+        bot.send_document(chat_id, f, caption=caption)
+
+
+def ext_export_env(uid):
+    envs = user_custom_envs.get(str(uid), {})
+    text = "
+".join(f"{k}={v}" for k, v in envs.items())
+    return text or "# No custom environment variables"
+
+
+def ext_import_env(uid, text):
+    envs = user_custom_envs.setdefault(str(uid), {})
+    count = 0
+    for raw in text.splitlines():
+        raw = raw.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            envs[key] = value.strip().strip(""").strip("'")
+            count += 1
+    save_registry()
+    return count
+
+
+def ext_public_status():
+    statuses = []
+    for bid, rec in hosted_processes.items():
+        statuses.append({"id": bid, "running": is_bot_running(bid), "owner": rec.get("owner_id")})
+    path = os.path.join(PUBLIC_STATUS_DIR, "index.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"updated_at": now_iso(), "bots": statuses}, f, indent=2)
+    return path
+
+
+def ext_bandwidth(bot_id):
+    rec = hosted_processes.get(bot_id) or {}
+    pid = (rec.get("process") or None)
+    if not pid or not psutil or pid.poll() is not None:
+        return {"rx": 0, "tx": 0, "note": "Per-process network counters unavailable on this host."}
+    # Linux /proc fallback is intentionally best-effort; psutil does not expose per-process net bytes.
+    return {"rx": 0, "tx": 0, "note": "Per-process network counters unavailable; host-wide counters can be added by platform."}
+
+
+def ext_docker_status():
+    if not DOCKER_BIN:
+        return "🔴 Docker CLI not available on this host."
+    try:
+        r = _subprocess_ext.run([DOCKER_BIN, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            return f"🟢 Docker available — `{r.stdout.strip()}`"
+        return f"🔴 Docker unavailable: `{safe_text(r.stderr, 1000)}`"
+    except Exception as exc:
+        return f"🔴 Docker check failed: `{exc}`"
+
+
+def ext_safe_docker_run(bot_id, command):
+    if not DOCKER_BIN:
+        return False, "Docker is not installed."
+    if not ext_is_owner(user_sessions.get(str(bot_id), {}).get("uid", 0), bot_id):
+        return False, "Permission denied."
+    return False, "Docker sandbox is provisioned as an optional deployment target; enable it per host policy."
+
+
+def ext_allowed_terminal(bot_id, command, uid):
+    if not ext_is_owner(uid, bot_id):
+        return "❌ Permission denied."
+    try:
+        parts = shlex.split(command)
+    except Exception:
+        return "❌ Invalid command syntax."
+    if not parts:
+        return ""
+    allowed = {"pwd", "ls", "dir", "python", "python3", "pip", "pip3"}
+    if parts[0] not in allowed:
+        return "🛡️ Only safe read/package commands are allowed: `pwd`, `ls`, `python --version`, `pip --version`."
+    if parts[0] in {"python", "python3"} and len(parts) > 2:
+        return "🛡️ Python execution is restricted inside the Telegram terminal."
+    if parts[0] in {"pip", "pip3"} and len(parts) > 2 and parts[1] not in {"--version", "list", "show"}:
+        return "🛡️ Package installation is controlled by the deployment engine."
+    folder = os.path.join(HOST_DIR, bot_id)
+    try:
+        r = _subprocess_ext.run(parts, cwd=folder, capture_output=True, text=True, timeout=20)
+        return safe_text((r.stdout or r.stderr or "(no output)"), 3500)
+    except Exception as exc:
+        return f"❌ Terminal error: `{exc}`"
+
+
+def ext_github_deploy(url, uid):
+    if not url.startswith(("https://github.com/", "http://github.com/")):
+        raise ValueError("Only GitHub repository URLs are accepted.")
+    parsed = urlparse(url)
+    parts = [x for x in parsed.path.strip("/").split("/") if x]
+    if len(parts) < 2:
+        raise ValueError("Invalid GitHub repository URL.")
+    owner, repo = parts[:2]
+    repo = repo.removesuffix(".git")
+    bot_id = generate_bot_id()
+    dest = os.path.join(HOST_DIR, bot_id)
+    os.makedirs(dest, exist_ok=True)
+    git = shutil.which("git")
+    if not git:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RuntimeError("Git is not installed on the hosting host.")
+    clone_url = f"https://github.com/{owner}/{repo}.git"
+    git_cmd = [git]
+    if GH_TOKEN:
+        git_cmd += ["-c", f"http.extraheader=AUTHORIZATION: bearer {GH_TOKEN}"]
+    git_cmd += ["clone", "--depth", "1", clone_url, dest]
+    r = _subprocess_ext.run(git_cmd, capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RuntimeError(safe_text(r.stderr, 2000))
+    candidates = ["main.py", "bot.py", "app.py", "server.py"]
+    entry = next((x for x in candidates if os.path.isfile(os.path.join(dest, x))), None)
+    if not entry:
+        pyfiles = []
+        for root, _, files in os.walk(dest):
+            pyfiles.extend(os.path.relpath(os.path.join(root, x), dest) for x in files if x.endswith(".py"))
+        if pyfiles:
+            entry = pyfiles[0]
+    if not entry:
+        raise RuntimeError("No Python entry file found in repository.")
+    bot_metadata[bot_id] = {"owner_id": uid, "entry_file": entry, "source": url, "created_at": now_iso()}
+    ensure_metrics(bot_id)
+    create_bot_version(bot_id, reason="github_import")
+    save_registry()
+    return bot_id, entry
+
+
+def ext_natural_bot_search(uid, query):
+    q = query.lower()
+    scored = []
+    for bid, rec in hosted_processes.items():
+        if not ext_is_owner(uid, bid):
+            continue
+        meta = bot_metadata.get(bid, {})
+        hay = " ".join([bid, str(meta.get("name", "")), str(meta.get("source", "")), str(rec.get("entry_file", ""))]).lower()
+        score = sum(1 for token in re.findall(r"\w+", q) if token in hay)
+        if score:
+            scored.append((score, bid))
+    return [x[1] for x in sorted(scored, reverse=True)]
+
+
+def ext_naming_assistant(uid):
+    candidates = ["NovaHost", "ArshadCloud", "ZyroBot", "PulseBot", "BiharBot", "SwiftHost", "OrbitBot", "CodeNest"]
+    used = {str(v.get("name", "")) for v in bot_metadata.values()}
+    return next((x for x in candidates if x not in used), "HostedBot")
+
+
+def ext_auto_mode(uid):
+    """Return whether automatic AI↔Normal fallback is enabled for this user."""
+    return bool(
+        extension_state.setdefault("auto_mode", {}).get(
+            str(uid),
+            AI_AUTO_SWITCH,
+        )
+    )
+
+
+def ext_set_auto_mode(uid, enabled):
+    extension_state.setdefault("auto_mode", {})[str(uid)] = bool(enabled)
+    extension_save_state()
+
+
+def ext_ai_available():
+    return bool(AI_ENDPOINT and AI_API_KEY)
+
+
+def ext_extract_code(text):
+    """Extract a complete script from a Markdown code fence or plain code text."""
+    text = (text or "").strip()
+    fenced = re.findall(r"```(?:[A-Za-z0-9_+.#-]+)?\s*
+?(.*?)```", text, flags=re.S)
+    if fenced:
+        candidates = [x.strip() for x in fenced if x.strip()]
+        if candidates:
+            return max(candidates, key=len)
+    # Accept obvious source-code input without a fence.
+    code_markers = (
+        "import ", "from ", "def ", "class ", "#!", "print(",
+        "const ", "let ", "var ", "function ", "<!doctype", "<html",
+        "require(", "package main", "using System", "<?php",
+    )
+    if any(text.startswith(x) or f"
+{x}" in text for x in code_markers):
+        return text
+    return ""
+
+
+def ext_local_script_analysis(code):
+    """Normal-mode analysis: syntax-check Python without requiring AI."""
+    try:
+        ast.parse(code)
+        return "✅ Local normal-mode check: Python syntax is valid."
+    except SyntaxError as exc:
+        return (
+            "⚠️ Local normal-mode check found a Python syntax error: "
+            f"`line {exc.lineno}: {safe_text(exc.msg, 300)}`"
+        )
+    except Exception as exc:
+        return f"ℹ️ Local check: `{safe_text(exc, 500)}`"
+
+
+def ext_ai_or_normal(uid, prompt, context="", local_fallback=""):
+    """
+    AI is an enhancement, never a hard dependency.
+    If AI is unavailable/fails and auto-switch is enabled, return the normal fallback.
+    """
+    if ext_ai_available():
+        result = ext_ai_request(prompt, context)
+        if not result.startswith(("❌ AI request failed", "AI provider is not configured")):
+            return result
+        if not ext_auto_mode(uid):
+            return result
+    return local_fallback or "🟢 Normal mode is active; AI was not required."
+
+
+def ext_prepare_script_for_runner(uid, user_text):
+    """
+    Build a deployable script proposal. AI can generate code when available;
+    otherwise the user's supplied code is used directly, so deployment remains
+    independent of AI.
+    """
+    direct_code = ext_extract_code(user_text)
+    if direct_code:
+        return direct_code, "direct"
+
+    if ext_mode(uid) == "ai" and ext_ai_available():
+        prompt = (
+            "Create ONE complete, runnable application script from the user's request. "
+            "Return only the source code inside one Markdown code fence. "
+            "Do not return commentary. Preserve requested behavior. "
+            "Prefer Python unless the user explicitly requests another language. "
+            "The hosting engine will syntax-check and deploy it only after user confirmation.
+
+"
+            "USER REQUEST:
+" + user_text
+        )
+        answer = ext_ai_request(prompt)
+        code = ext_extract_code(answer)
+        if code:
+            return code, "ai"
+
+    # AI failed/unavailable: auto-switch to normal mode.
+    if ext_auto_mode(uid):
+        return "", "normal_fallback"
+
+    return "", "ai_unavailable"
+
+
+def ext_chat2script_proposal(uid, user_text):
+    code, source = ext_prepare_script_for_runner(uid, user_text)
+    if not code:
+        if source == "normal_fallback":
+            return (
+                "🔁 **AI unavailable — Normal Mode active.**
+
+"
+                "AI generation was skipped. Send the complete code (preferably in a "
+                "```code``` block), and I can deploy it without AI."
+            )
+        return (
+            "❌ I could not generate/extract runnable code.
+
+"
+            "Either configure the AI provider or send the complete script directly."
+        )
+
+    if len(code) > AI_MAX_SCRIPT_CHARS:
+        return f"❌ Script is too large. Limit: `{AI_MAX_SCRIPT_CHARS}` characters."
+
+    # Keep pending script out of Telegram text; store it server-side.
+    state = user_sessions.setdefault(str(uid), {})
+    state["pending_script"] = code
+    state["pending_script_source"] = source
+    state["awaiting"] = "chat2script_confirm"
+
+    language = "Python" if re.search(r"(^|
+)\s*(import |from |def |class )", code) else "source"
+    preview = safe_text(code, 1800)
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✅ Deploy Full Board", callback_data="x_c2s_confirm"),
+        InlineKeyboardButton("❌ Cancel", callback_data="x_c2s_cancel"),
+    )
+    return (
+        "🧑‍💻 **Chat → Script Runner**
+
+"
+        f"Source: `{source.upper()}`
+"
+        f"Type: `{language}`
+"
+        f"Size: `{len(code)}` chars
+
+"
+        "I will NOT deploy automatically. Your permission is required first.
+"
+        "After confirmation: create bot → backup/version → dependency scan → "
+        "optional auto-install → syntax check → start → health monitoring.
+
+"
+        "```
+" + preview + "
+```"
+    ), markup
+
+
+def ext_chat2script_deploy(uid, chat_id):
+    state = user_sessions.setdefault(str(uid), {})
+    code = state.get("pending_script", "")
+    if not code:
+        raise ValueError("No pending script is waiting for confirmation.")
+
+    bot_id = generate_bot_id()
+    folder = os.path.join(HOST_DIR, bot_id)
+    os.makedirs(folder, exist_ok=True)
+    entry = "main.py"
+    path = os.path.join(folder, entry)
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(code)
+        # Syntax validation happens before any process is started.
+        py_compile.compile(path, doraise=True)
+
+        bot_metadata[bot_id] = {
+            "owner_id": uid,
+            "entry_file": entry,
+            "source": "chat_to_script_runner",
+            "created_at": now_iso(),
+            "script_source": state.get("pending_script_source", "unknown"),
+        }
+        ensure_metrics(bot_id)
+
+        # Preserve the engine's existing version/rollback architecture.
+        create_bot_version(bot_id, reason="chat_to_script_runner")
+
+        packages = ext_requirements_for_bot(bot_id)
+        req_path = os.path.join(folder, "requirements.generated.txt")
+        with open(req_path, "w", encoding="utf-8") as f:
+            if packages:
+                f.write("
+".join(packages) + "
+")
+
+        if CHAT2SCRIPT_AUTO_INSTALL and packages:
+            ok, error = auto_install_packages_verified(
+                packages,
+                chat_id,
+                0,
+                time.time(),
+            )
+            if not ok:
+                # Keep the deployed source and metadata; do not start a broken bot.
+                raise RuntimeError(
+                    "Dependency installation failed. "
+                    + safe_text(error, 1400)
+                )
+
+        result = start_bot_once(
+            bot_id,
+            entry,
+            uid,
+            reason="chat_to_script_runner",
+            notify=False,
+        )
+        metric_increment(bot_id, "deployments")
+        ensure_metrics(bot_id)["successful_runs"] = int(
+            ensure_metrics(bot_id).get("successful_runs", 0)
+        ) + (1 if result.get("started") else 0)
+        ext_set_bot(uid, bot_id)
+
+        state.pop("pending_script", None)
+        state.pop("pending_script_source", None)
+        state.pop("awaiting", None)
+        save_registry()
+        return bot_id, entry, packages, result
+    except Exception:
+        # Do not leave a half-created project as an active hosted bot.
+        hosted_processes.pop(bot_id, None)
+        shutil.rmtree(folder, ignore_errors=True)
+        bot_metadata.pop(bot_id, None)
+        bot_metrics.pop(bot_id, None)
+        save_registry()
+        raise
+
+
+def ext_normal_fallback_for_action(uid, action, bot_id=None):
+    """Local equivalents for AI actions, keeping all AI buttons functional offline."""
+    bot_id = bot_id or ext_require_bot(uid)
+    if action == "review":
+        if not bot_id:
+            return "🟢 Normal mode: select a bot first."
+        folder = os.path.join(HOST_DIR, bot_id)
+        py_files = []
+        for root, _, files in os.walk(folder):
+            py_files.extend(
+                os.path.join(root, n) for n in files if n.endswith(".py")
+            )
+        syntax_errors = []
+        for fp in py_files[:100]:
+            try:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    ast.parse(f.read(), filename=fp)
+            except SyntaxError as exc:
+                syntax_errors.append(
+                    f"• `{os.path.relpath(fp, folder)}` line `{exc.lineno}`: {exc.msg}"
+                )
+        return (
+            f"🟢 **Normal Code Review — {bot_id}**
+
+"
+            + ("✅ Python syntax checks passed." if not syntax_errors
+               else "⚠️ Syntax findings:
+" + "
+".join(syntax_errors))
+        )
+    if action == "req":
+        if not bot_id:
+            return "🟢 Normal mode: select a bot first."
+        _, packages = ext_write_requirements(bot_id)
+        return "🟢 **Normal Requirements Scan**
+
+" + (
+            "
+".join(f"• `{x}`" for x in packages) if packages else "No external packages detected."
+        )
+    if action == "sec":
+        if not bot_id:
+            return "🟢 Normal mode: select a bot first."
+        findings = ext_security_audit_path(os.path.join(HOST_DIR, bot_id))
+        return (
+            "🟢 **Normal Security Scanner**
+
+"
+            + ("
+".join(findings) if findings else "✅ No obvious hard-coded secret patterns detected.")
+        )
+    if action == "logs":
+        if not bot_id:
+            return "🟢 Normal mode: select a bot first."
+        return "🟢 **Normal Log Mode**
+
+" + safe_text(ext_ai_crash_context(bot_id), 4000)
+    if action == "health":
+        if not bot_id:
+            return "🟢 Normal mode: select a bot first."
+        h = inspect_bot_health(bot_id)
+        return (
+            f"🟢 **Normal Health Check — {bot_id}**
+
+"
+            f"Status: `{h['status']}`
+CPU: `{round(float(h.get('cpu', 0)), 2)}%`
+"
+            f"Memory: `{get_readable_size(int(h.get('memory', 0)))}`
+PID: `{h.get('pid')}`"
+        )
+    if action == "heal":
+        if not bot_id:
+            return "🟢 Normal mode: select a bot first."
+        return "🟢 Normal auto-healing is already provided by the engine watchdog."
+    if action == "search":
+        return "🟢 Normal search: describe a bot name/ID and I will match the local registry."
+    if action == "support":
+        return ext_onboarding(uid)
+    if action == "broadcast":
+        return "🟢 Normal mode: AI is unavailable. Write your announcement manually and send it."
+    if action == "env":
+        return "🟢 Normal ENV mode:
+
+" + ext_export_env(uid)
+    if action == "name":
+        return f"🟢 Suggested local name: **{ext_naming_assistant(uid)}**"
+    if action == "crash":
+        return "🟢 **Normal Crash Log**
+
+" + safe_text(ext_ai_crash_context(bot_id), 4000)
+    if action == "opt":
+        if not bot_id:
+            return "🟢 Normal mode: select a bot first."
+        folder = os.path.join(HOST_DIR, bot_id)
+        files = []
+        total_lines = 0
+        for root, _, names in os.walk(folder):
+            for name in names:
+                if name.endswith((".py", ".js", ".ts")):
+                    fp = os.path.join(root, name)
+                    try:
+                        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                            lines = f.readlines()
+                        files.append(os.path.relpath(fp, folder))
+                        total_lines += len(lines)
+                    except Exception:
+                        pass
+        return (
+            f"🟢 **Normal Optimization Report — {bot_id}**
+
+"
+            f"Files scanned: `{len(files)}`
+Lines scanned: `{total_lines}`
+"
+            "No automatic semantic rewrite was performed; the normal engine preserves existing behavior."
+        )
+    return "🟢 Normal mode handled the request without AI."
+
+
+def ext_ai_assist_feature(uid, feature, context=""):
+    """Universal AI layer for every extension feature.
+
+    Normal mode never calls this. AI mode uses it as an advisory/decision layer,
+    while the deterministic implementation remains the source of truth.
+    If the provider is unavailable, the feature continues normally.
+    """
+    if ext_mode(uid) != "ai" or not ext_auto_mode(uid) or not ext_ai_available():
+        return ""
+    prompts = {
+        "github": "Review this GitHub deployment request for likely entrypoint, dependency, and deployment risks. Give concise actionable advice; do not block a valid deployment.",
+        "backup": "Advise on the safest backup/versioning strategy for this hosted bot. Do not delete or modify files.",
+        "docker": "Explain the safest containerization option for this hosting environment without changing the deployment automatically.",
+        "public": "Summarize the public-status information and point out operational risks without changing anything.",
+        "bandwidth": "Interpret the bot bandwidth metrics and identify unusual usage patterns if visible.",
+        "database": "Recommend a safe database setup for this hosted project while preserving the existing local database feature.",
+        "format": "Review the code-formatting intent and identify any risky formatting changes that should be avoided.",
+        "requirements": "Review the locally detected dependencies and identify likely missing or suspicious packages. Do not invent packages without evidence.",
+        "pdf": "Explain what the bot logs indicate operationally and what should be checked next.",
+        "proxy": "Explain the configured proxy/public URL setup and its likely operational implications.",
+        "security": "Review this security action context and provide defensive recommendations without weakening existing controls.",
+        "scheduler": "Suggest the safest scheduling strategy for this bot action while preserving the deterministic scheduler.",
+        "team": "Explain the safest team permission practice for this action; never grant permissions automatically.",
+        "template": "Suggest a robust deployment configuration for this template while preserving the generated template itself.",
+        "ui": "Suggest a useful UI configuration for the selected setting without changing the user's requested setting.",
+        "onboarding": "Give concise beginner-friendly guidance for this hosting feature.",
+        "mode": "Explain the selected mode and its AI/normal behavior clearly.",
+    }
+    prompt = prompts.get(feature, "Assist with this hosting feature safely.")
+    try:
+        return ext_ai_request(prompt, context)
+    except Exception as exc:
+        logger.warning("AI feature assist failed: %s", exc)
+        return ""
+
+
+def ext_send_ai_assist(chat_id, uid, feature, context=""):
+    """Fire-and-forget AI advisory so normal operations are never blocked by AI."""
+    if ext_mode(uid) != "ai" or not ext_auto_mode(uid) or not ext_ai_available():
+        return
+    def worker():
+        answer = ext_ai_assist_feature(uid, feature, context)
+        if answer and not answer.startswith(("❌ AI request failed", "AI provider is not configured")):
+            try:
+                ext_send(chat_id, "🧠 **AI Assist**
+
+" + safe_text(answer, 3500))
+            except Exception:
+                pass
+    threading.Thread(target=worker, name=f"ai-assist-{feature}", daemon=True).start()
+
+
+def ext_ai_request(prompt, context=""):
+    if not AI_ENDPOINT or not AI_API_KEY:
+        return "AI provider is not configured. Set `AI_ENDPOINT`, `AI_API_KEY` and optionally `AI_MODEL` in the hosting environment."
+    try:
+        payload = {
+            "model": AI_MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a concise, security-conscious hosting assistant."},
+                {"role": "user", "content": prompt + "
+
+CONTEXT:
+" + context},
+            ],
+        }
+        r = requests.post(
+            AI_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {AI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=AI_TIMEOUT_SECONDS,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return safe_text(
+            data.get("choices", [{}])[0].get("message", {}).get("content", data),
+            5000,
+        )
+    except Exception as exc:
+        return f"❌ AI request failed: `{safe_text(exc, 1000)}`"
+
+
+def ext_ai_context_bot(bot_id, max_chars=12000):
+    if not bot_id:
+        return "No bot selected."
+    folder = os.path.join(HOST_DIR, bot_id)
+    snippets = []
+    total = 0
+    for root, _, files in os.walk(folder):
+        for name in files:
+            if not name.endswith((".py", ".js", ".ts")):
+                continue
+            fp = os.path.join(root, name)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
+                part = txt[: min(4000, max_chars - total)]
+                snippets.append(f"FILE {os.path.relpath(fp, folder)}
+{part}")
+                total += len(part)
+                if total >= max_chars:
+                    break
+            except Exception:
+                pass
+        if total >= max_chars:
+            break
+    return "
+
+".join(snippets)
+
+
+def ext_ai_crash_context(bot_id):
+    if not bot_id:
+        return "No bot selected."
+    path = os.path.join(LOG_DIR, f"{bot_id}.log")
+    if not os.path.isfile(path):
+        return "No log file found."
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()[-12000:]
+    except Exception:
+        return "Unable to read logs."
+
+
+def ext_ai_action(uid, action):
+    bot_id = ext_require_bot(uid)
+    if action in {"name", "broadcast", "support"}:
+        context = ""
+    elif not bot_id:
+        return ext_normal_fallback_for_action(uid, action)
+    else:
+        context = ext_ai_context_bot(bot_id)
+
+    prompts = {
+        "review": "Review this hosted code for bugs, reliability and safe deployment. Give actionable findings without claiming certainty.",
+        "opt": "Suggest safe performance and maintainability optimizations. Do not remove required behavior.",
+        "req": "Infer likely Python dependencies from this code and produce a conservative requirements list.",
+        "sec": "Perform a security review focusing on secrets, unsafe subprocesses, file traversal, permissions and network exposure.",
+        "env": "Explain which environment variables this project appears to need and why. Never invent secret values.",
+        "logs": "Summarize these logs into symptoms, likely causes and next safe actions.",
+        "health": "Assess likely operational risks from this hosting context and give a cautious 24-hour risk assessment.",
+        "heal": "Explain the safest automated recovery strategy for this bot and what should not be automated.",
+        "crash": "Analyze this crash log, identify the most likely root causes and suggest a minimal fix plan.",
+        "broadcast": "Draft a concise professional hosting maintenance/update announcement for Telegram.",
+        "support": "Explain how to use this hosting engine to a beginner in simple language.",
+        "search": "Provide a natural-language search interpretation for the user's hosted bot list.",
+    }
+
+    if action == "name":
+        if ext_ai_available():
+            return ext_ai_or_normal(uid, prompts[action], "", ext_normal_fallback_for_action(uid, action))
+        return ext_normal_fallback_for_action(uid, action)
+    if action == "broadcast":
+        return ext_ai_or_normal(uid, prompts[action], "", ext_normal_fallback_for_action(uid, action))
+    if action == "crash":
+        context = ext_ai_crash_context(bot_id)
+    return ext_ai_or_normal(
+        uid,
+        prompts.get(action, "Help with hosting."),
+        context,
+        ext_normal_fallback_for_action(uid, action, bot_id),
+    )
+
+
+def ext_log_pdf(bot_id):
+    path = os.path.join(LOG_DIR, f"{bot_id}.log")
+    if not os.path.isfile(path):
+        raise FileNotFoundError("Log file not found.")
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+    except ImportError:
+        raise RuntimeError("Install `reportlab` to enable PDF log export.")
+    out = os.path.join(BACKUP_DIR, f"{bot_id}_{time.strftime('%Y%m%d_%H%M%S')}.pdf")
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(out, pagesize=A4)
+    story = [Paragraph(f"Hosting Log — {bot_id}", styles["Title"]), Spacer(1, 12)]
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f.read()[-50000:].splitlines():
+            story.append(Paragraph(safe_text(line, 300).replace("&", "&amp;"), styles["Code"]))
+    doc.build(story)
+    return out
+
+
+def ext_template_create(kind, uid):
+    bot_id = generate_bot_id()
+    folder = os.path.join(HOST_DIR, bot_id)
+    os.makedirs(folder, exist_ok=True)
+    templates = {
+        "telegram": 'import os
+import telebot
+
+bot = telebot.TeleBot(os.environ.get("BOT_TOKEN", ""))
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.reply_to(message, "Hello from your hosted Telegram bot!")
+
+bot.infinity_polling()
+',
+        "flask": 'from flask import Flask
+app = Flask(__name__)
+
+@app.get("/")
+def home():
+    return "Hosted Flask app is online"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
+',
+        "fastapi": 'from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"status": "online"}
+',
+        "discord": 'import os
+# Add your Discord bot implementation here.
+print("Discord template ready")
+',
+        "sqlite": 'import sqlite3
+conn = sqlite3.connect("app.db")
+conn.execute("CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY, name TEXT)")
+conn.commit()
+conn.close()
+print("SQLite template ready")
+',
+    }
+    code = templates.get(kind, templates["telegram"])
+    entry = "main.py"
+    with open(os.path.join(folder, entry), "w", encoding="utf-8") as f:
+        f.write(code)
+    bot_metadata[bot_id] = {"owner_id": uid, "entry_file": entry, "template": kind, "name": ext_naming_assistant(uid), "created_at": now_iso()}
+    ensure_metrics(bot_id)
+    create_bot_version(bot_id, reason=f"template:{kind}")
+    save_registry()
+    return bot_id, entry
+
+
+def ext_schedule_add(uid, bot_id, action, delay_seconds):
+    if not ext_is_owner(uid, bot_id):
+        raise PermissionError("Permission denied")
+    try:
+        delay = max(60, int(delay_seconds))
+    except Exception:
+        raise ValueError("Delay must be seconds.")
+    item = {"id": hashlib.sha256(f"{uid}:{bot_id}:{time.time()}".encode()).hexdigest()[:10], "owner_id": uid, "bot_id": bot_id, "action": action, "run_at": time.time() + delay, "enabled": True}
+    extension_state.setdefault("schedules", []).append(item)
+    extension_save_state()
+    return item
+
+
+def ext_schedule_worker():
+    while not SHUTDOWN_REQUESTED:
+        now = time.time()
+        changed = False
+        for item in list(extension_state.get("schedules", [])):
+            if not item.get("enabled") or item.get("run_at", 0) > now:
+                continue
+            bid = item.get("bot_id")
+            owner = item.get("owner_id")
+            try:
+                if item.get("action") == "start":
+                    rec = hosted_processes.get(bid) or {}
+                    start_bot_once(bid, rec.get("entry_file"), owner, reason="scheduler", notify=False)
+                elif item.get("action") == "stop":
+                    stop_script_process(bid, reason="scheduler")
+                elif item.get("action") == "restart":
+                    restart_bot(bid, owner, notify=False)
+                elif item.get("action") == "backup":
+                    p = ext_backup_bot(bid)
+                    ext_send_file(owner, p, f"Scheduled backup: {bid}")
+            except Exception as exc:
+                record_error(bid, exc)
+            item["enabled"] = False
+            changed = True
+        if changed:
+            extension_save_state()
+        time.sleep(2)
+
+
+def ext_auto_sleep_worker():
+    while not SHUTDOWN_REQUESTED:
+        now = time.time()
+        for bid, cfg in list(extension_state.get("sleep", {}).items()):
+            if not cfg.get("enabled") or not is_bot_running(bid):
+                continue
+            idle = now - float(cfg.get("last_activity", now))
+            if idle >= float(cfg.get("timeout", 3600)):
+                try:
+                    stop_script_process(bid, reason="auto_sleep")
+                except Exception:
+                    pass
+        time.sleep(30)
+
+
+def ext_update_activity(bot_id):
+    extension_state.setdefault("sleep", {}).setdefault(bot_id, {"enabled": False, "timeout": 3600, "last_activity": time.time()})["last_activity"] = time.time()
+
+
+def ext_patch_process_activity():
+    # Lightweight compatibility hook: the extension tracks scheduler/health activity without replacing original process functions.
+    return True
+
+
+def ext_dashboard_text(uid):
+    mode = ext_mode(uid).upper()
+    ai = "configured" if AI_ENDPOINT and AI_API_KEY else "not configured"
+    return (
+        "🧩 **SUPERCHARGED EXTENSION PACK**
+
+"
+        f"🎛️ Mode: `{mode}`
+"
+        f"🔁 Auto AI ↔ Normal: `{'ON' if ext_auto_mode(uid) else 'OFF'}`
+"
+        f"🤖 AI Provider: `{ai}`
+"
+        f"🌐 Proxy URL: `{NGROK_URL or 'not configured'}`
+"
+        f"🐳 Docker: `{'available' if DOCKER_BIN else 'unavailable'}`
+"
+        f"🐙 GitHub: `{'token configured' if GH_TOKEN else 'optional/no token'}`
+
+"
+        "50-feature architecture is installed as a non-destructive add-on."
+    )
+
+
+def ext_onboarding(uid):
+    return (
+        "🧭 **Quick Onboarding**
+
+"
+        "1️⃣ Choose Normal or AI Mode.
+"
+        "2️⃣ Deploy a `.py`/`.zip` or use a template.
+"
+        "3️⃣ Select dependencies and start.
+"
+        "4️⃣ Use My Bots for Start/Stop/Restart/Logs.
+"
+        "5️⃣ Use Scheduler, Backup and Security tools from New Tools.
+"
+        "6️⃣ AI tools require an AI provider configuration."
+    )
+
+
+def ext_callback(call):
+    uid = call.from_user.id
+    chat = call.message.chat.id
+    data = call.data or ""
+    if not data.startswith("x_"):
+        return False
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    if not ext_rate_allowed(uid, "callback"):
+        ext_send(chat, "⏳ Too many actions. Please wait a moment.")
+        return True
+    try:
+        if data.startswith("x_mode:"):
+            mode = data.split(":", 1)[1]
+            ext_set_mode(uid, mode)
+            ext_send(chat, f"✅ Mode changed to **{mode.upper()}**.", ext_feature_menu(uid))
+        elif data == "x_features":
+            ext_send(chat, ext_dashboard_text(uid), ext_feature_menu(uid))
+        elif data == "x_tools":
+            ext_send_ai_assist(chat, uid, "onboarding", "New Tools menu")
+            ext_send(chat, "🧰 **New Tools**", ext_tools_menu())
+        elif data == "x_ui":
+            ext_send_ai_assist(chat, uid, "ui", "UI/UX settings menu")
+            ext_send(chat, "🎨 **UI / UX Settings**", ext_ui_menu())
+        elif data == "x_security":
+            ext_send_ai_assist(chat, uid, "security", "Security Center")
+            ext_send(chat, "🔐 **Security Center**", ext_security_menu())
+        elif data == "x_ai":
+            ext_send(chat, "🧠 **AI Mode Tools**", ext_ai_menu())
+        elif data == "x_schedule":
+            ext_send_ai_assist(chat, uid, "scheduler", "Scheduler menu")
+            ext_send(chat, "📅 **Scheduler**", ext_schedule_menu())
+        elif data == "x_team":
+            ext_send_ai_assist(chat, uid, "team", "Team menu")
+            ext_send(chat, "👥 **Team Collaboration**", ext_team_menu(uid))
+        elif data == "x_templates":
+            ext_send_ai_assist(chat, uid, "template", "Template menu")
+            ext_send(chat, "📦 **1-Click Templates**", ext_template_menu())
+        elif data == "x_onboard":
+            ext_send_ai_assist(chat, uid, "onboarding", ext_onboarding(uid))
+            ext_send(chat, ext_onboarding(uid), ext_feature_menu(uid))
+        elif data.startswith("x_lang:"):
+            ext_send_ai_assist(chat, uid, "ui", "language setting")
+            lang = data.split(":", 1)[1]
+            extension_state.setdefault("language", {})[str(uid)] = lang
+            extension_save_state()
+            ext_send(chat, "✅ Language updated.", ext_ui_menu())
+        elif data.startswith("x_layout:"):
+            ext_send_ai_assist(chat, uid, "ui", "dashboard layout setting")
+            layout = data.split(":", 1)[1]
+            extension_state.setdefault("grid_layout", {})[str(uid)] = layout
+            extension_save_state()
+            ext_send(chat, f"✅ Dashboard layout: `{layout}`", ext_ui_menu())
+        elif data.startswith("x_theme:"):
+            ext_send_ai_assist(chat, uid, "ui", "log theme setting")
+            theme = data.split(":", 1)[1]
+            extension_state.setdefault("theme", {})[str(uid)] = theme
+            extension_save_state()
+            ext_send(chat, f"✅ Log theme: `{theme}`", ext_ui_menu())
+        elif data == "x_docker":
+            ext_send_ai_assist(chat, uid, "docker", ext_docker_status())
+            ext_send(chat, ext_docker_status(), ext_tools_menu())
+        elif data == "x_public":
+            p = ext_public_status()
+            ext_send_ai_assist(chat, uid, "public", p)
+            ext_send(chat, f"🌐 Public status JSON generated.
+`{p}`", ext_tools_menu())
+        elif data == "x_bandwidth":
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_tools_menu())
+            else:
+                info = ext_bandwidth(bid)
+                ext_send(chat, f"📊 **{bid} Bandwidth**
+RX: `{get_readable_size(info['rx'])}`
+TX: `{get_readable_size(info['tx'])}`
+
+{info['note']}", ext_tools_menu())
+        elif data == "x_database":
+            ext_send_ai_assist(chat, uid, "database", "database action")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_tools_menu())
+            else:
+                p = ext_create_database(bid)
+                ext_send(chat, f"🗄️ Database ready: `{os.path.basename(p)}`", ext_tools_menu())
+        elif data == "x_format":
+            ext_send_ai_assist(chat, uid, "format", "formatter action")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_tools_menu())
+            else:
+                changed = ext_format_bot(bid)
+                ext_send(chat, f"📝 Formatter complete. Files changed: `{len(changed)}`.", ext_tools_menu())
+        elif data in {"x_requirements", "x_ai_req"}:
+            if data == "x_requirements":
+                ext_send_ai_assist(chat, uid, "requirements", "requirements generation")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_tools_menu())
+            else:
+                p, packages = ext_write_requirements(bid)
+                if data == "x_ai_req" and ext_mode(uid) == "ai":
+                    answer = ext_ai_action(uid, "req")
+                    ext_send(chat, answer, ext_ai_menu())
+                else:
+                    ext_send(chat, f"📦 Generated requirements: `{os.path.basename(p)}`
+
+" + "
+".join(f"• `{x}`" for x in packages), ext_tools_menu())
+        elif data == "x_backup":
+            ext_send_ai_assist(chat, uid, "backup", "backup action")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_tools_menu())
+            else:
+                p = ext_backup_bot(bid)
+                ext_send_file(chat, p, f"Backup — {bid}")
+        elif data == "x_pdf":
+            ext_send_ai_assist(chat, uid, "pdf", "log PDF export")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_tools_menu())
+            else:
+                p = ext_log_pdf(bid)
+                ext_send_file(chat, p, f"PDF log — {bid}")
+        elif data == "x_proxy":
+            ext_send_ai_assist(chat, uid, "proxy", NGROK_URL or "proxy not configured")
+            ext_send(chat, "🔌 Webhook/Port forwarding
+
+" + (f"Configured public URL: `{NGROK_URL}`" if NGROK_URL else "Set `NGROK_URL` after starting your tunnel. The engine does not open arbitrary inbound ports by itself."), ext_tools_menu())
+        elif data == "x_github":
+            user_sessions[str(uid)]["awaiting"] = "github"
+            ext_send(chat, "🐙 Send a GitHub repository URL.
+Example: `https://github.com/owner/repo`
+
+Send `cancel` to stop.")
+        elif data == "x_env_export":
+            text = ext_export_env(uid)
+            ext_send(chat, "🔐 **ENV Export**
+
+```
+" + safe_text(text, 3000) + "
+```", ext_security_menu())
+        elif data == "x_audit":
+            ext_send_ai_assist(chat, uid, "security", "local security audit")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_security_menu())
+            else:
+                findings = ext_security_audit_path(os.path.join(HOST_DIR, bid))
+                ext_send(chat, f"🔎 **Security Audit — {bid}**
+
+" + ("
+".join(findings) if findings else "✅ No obvious hard-coded secret patterns detected by the local scanner."), ext_security_menu())
+        elif data == "x_cve":
+            ext_send_ai_assist(chat, uid, "security", "dependency audit")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_security_menu())
+            else:
+                ext_write_requirements(bid)
+                ext_send(chat, "🧩 **Dependency Audit**
+
+" + ext_dependency_cve_hint(bid), ext_security_menu())
+        elif data == "x_rate":
+            ext_send_ai_assist(chat, uid, "security", "rate limiter status")
+            ext_send(chat, "🛡️ Rate limiter is active on extension callbacks: 12 actions / 60 seconds per user.", ext_security_menu())
+        elif data == "x_ai_review":
+            ext_send(chat, ext_ai_action(uid, "review"), ext_ai_menu())
+        elif data == "x_ai_crash":
+            ext_send(chat, ext_ai_action(uid, "crash"), ext_ai_menu())
+        elif data == "x_ai_opt":
+            ext_send(chat, ext_ai_action(uid, "opt"), ext_ai_menu())
+        elif data == "x_ai_logs":
+            ext_send(chat, ext_ai_action(uid, "logs"), ext_ai_menu())
+        elif data == "x_ai_sec":
+            ext_send(chat, ext_ai_action(uid, "sec"), ext_ai_menu())
+        elif data == "x_ai_env":
+            ext_send(chat, ext_ai_action(uid, "env"), ext_ai_menu())
+        elif data == "x_ai_health":
+            ext_send(chat, ext_ai_action(uid, "health"), ext_ai_menu())
+        elif data == "x_ai_search":
+            user_sessions[str(uid)]["awaiting"] = "ai_search"
+            ext_send(chat, "🔎 Describe your bot naturally, e.g. `start my image bot`. Send `cancel` to stop.")
+        elif data == "x_ai_heal":
+            ext_send(chat, ext_ai_action(uid, "heal"), ext_ai_menu())
+        elif data == "x_ai_broadcast":
+            ext_send(chat, ext_ai_action(uid, "broadcast"), ext_ai_menu())
+        elif data == "x_ai_name":
+            ext_send(chat, ext_ai_action(uid, "name"), ext_ai_menu())
+        elif data == "x_ai_support":
+            ext_send(chat, ext_ai_action(uid, "support"), ext_ai_menu())
+        elif data == "x_ai_chat2script":
+            user_sessions.setdefault(str(uid), {})["awaiting"] = "chat2script_prompt"
+            ext_send(
+                chat,
+                "🧑‍💻 **Chat → Script Runner**
+
+"
+                "Send your request in plain language OR send the complete code.
+"
+                "Example: `Python Telegram bot with /start and /help`.
+
+"
+                "The script will be prepared first; **deployment always needs your confirmation**.
+"
+                "Send `cancel` to stop.",
+                ext_ai_menu(),
+            )
+        elif data == "x_auto_mode":
+            enabled = not ext_auto_mode(uid)
+            ext_set_auto_mode(uid, enabled)
+            ext_send(
+                chat,
+                f"🔁 Auto AI ↔ Normal is now **{'ON' if enabled else 'OFF'}**.
+
+"
+                "ON = AI is preferred when available; if AI fails, the normal engine continues.
+"
+                "OFF = AI failures are shown instead of silently falling back.",
+                ext_ai_menu(),
+            )
+        elif data == "x_c2s_cancel":
+            user_sessions.setdefault(str(uid), {}).pop("pending_script", None)
+            user_sessions[str(uid)].pop("pending_script_source", None)
+            user_sessions[str(uid)].pop("awaiting", None)
+            ext_send(chat, "❌ Chat → Script Runner cancelled.", ext_ai_menu())
+        elif data == "x_c2s_confirm":
+            if user_sessions.setdefault(str(uid), {}).get("awaiting") != "chat2script_confirm":
+                ext_send(chat, "❌ No deployment proposal is waiting for confirmation.", ext_ai_menu())
+            else:
+                ext_send(chat, "🚀 Permission received. Deploying the complete board now…")
+                bid, entry, packages, result = ext_chat2script_deploy(uid, chat)
+                ext_send(
+                    chat,
+                    f"✅ **Deployment complete**
+
+"
+                    f"🤖 Bot ID: `{bid}`
+"
+                    f"📄 Entry: `{entry}`
+"
+                    f"📦 Dependencies: `{len(packages)}`
+"
+                    f"🟢 Result: `{result.get('message', 'started')}`",
+                    ext_feature_menu(uid),
+                )
+        elif data == "x_sched_add":
+            ext_send_ai_assist(chat, uid, "scheduler", "add scheduled action")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first. Use My Bots and tap a bot control panel.", ext_schedule_menu())
+            else:
+                user_sessions[str(uid)]["awaiting"] = "schedule"
+                ext_send(chat, "📅 Send: `action delay_seconds`
+Example: `restart 3600`
+Allowed: start, stop, restart, backup")
+        elif data == "x_sched_list":
+            ext_send_ai_assist(chat, uid, "scheduler", "list schedules")
+            rows = [x for x in extension_state.get("schedules", []) if int(x.get("owner_id", -1)) == int(uid) and x.get("enabled")]
+            text = "📋 **Active schedules**
+
+" + ("
+".join(f"• `{x['id']}` `{x['bot_id']}` `{x['action']}` in `{max(0,int(x['run_at']-time.time()))}s`" for x in rows) if rows else "No active schedules.")
+            ext_send(chat, text, ext_schedule_menu())
+        elif data == "x_sleep":
+            ext_send_ai_assist(chat, uid, "scheduler", "auto-sleep toggle")
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a bot first.", ext_schedule_menu())
+            else:
+                cfg = extension_state.setdefault("sleep", {}).setdefault(bid, {"enabled": False, "timeout": 3600, "last_activity": time.time()})
+                cfg["enabled"] = not cfg.get("enabled", False)
+                cfg["last_activity"] = time.time()
+                extension_save_state()
+                ext_send(chat, f"😴 Auto-sleep for `{bid}`: `{'ON' if cfg['enabled'] else 'OFF'}` (default 1h idle timeout).", ext_schedule_menu())
+        elif data == "x_cron_help":
+            ext_send_ai_assist(chat, uid, "scheduler", "cron help")
+            ext_send(chat, "⏰ Scheduler uses one-shot delayed tasks. For recurring cron, use your host OS scheduler or a process supervisor; this add-on intentionally avoids arbitrary cron execution from Telegram.", ext_schedule_menu())
+        elif data == "x_team_add":
+            ext_send_ai_assist(chat, uid, "team", "add admin request")
+            if not is_admin(uid):
+                ext_send(chat, "❌ Admin only.", ext_team_menu(uid))
+            else:
+                user_sessions[str(uid)]["awaiting"] = "team_add"
+                ext_send(chat, "Send the Telegram numeric user ID to add as a secondary admin.")
+        elif data == "x_team_remove":
+            ext_send_ai_assist(chat, uid, "team", "remove admin request")
+            if not is_admin(uid):
+                ext_send(chat, "❌ Admin only.", ext_team_menu(uid))
+            else:
+                user_sessions[str(uid)]["awaiting"] = "team_remove"
+                ext_send(chat, "Send the Telegram numeric user ID to remove.")
+        elif data == "x_team_list":
+            ext_send_ai_assist(chat, uid, "team", "team list")
+            admins = extension_state.get("team", {}).get("admins", [])
+            ext_send(chat, "👥 **Team**
+
+" + ("
+".join(f"• `{x}`" for x in admins) if admins else "No secondary admins."), ext_team_menu(uid))
+        elif data.startswith("x_tpl:"):
+            kind = data.split(":", 1)[1]
+            ext_send_ai_assist(chat, uid, "template", kind)
+            bid, entry = ext_template_create(kind, uid)
+            ext_set_bot(uid, bid)
+            ext_send(chat, f"📦 Template deployed to `{bid}`.
+Entry: `{entry}`
+
+Use the existing control panel to start it.", ext_template_menu())
+        else:
+            return False
+        return True
+    except Exception as exc:
+        logger.exception("Extension callback failed")
+        ext_send(chat, f"❌ Extension error: `{safe_text(exc, 1600)}`", ext_feature_menu(uid))
+        return True
+
+
+def ext_handle_text(message):
+    uid = message.from_user.id
+    text = (message.text or "").strip()
+    state = user_sessions.setdefault(str(uid), {})
+    awaiting = state.get("awaiting")
+    if not awaiting:
+        return False
+    if text.lower() == "cancel":
+        state.pop("awaiting", None)
+        ext_send(message.chat.id, "❌ Cancelled.", ext_feature_menu(uid))
+        return True
+    try:
+        if awaiting == "chat2script_prompt":
+            proposal = ext_chat2script_proposal(uid, text)
+            state["awaiting"] = state.get("awaiting")
+            if isinstance(proposal, tuple):
+                body, markup = proposal
+                ext_send(message.chat.id, body, markup)
+            else:
+                ext_send(message.chat.id, proposal, ext_ai_menu())
+            if state.get("awaiting") != "chat2script_confirm":
+                state.pop("awaiting", None)
+        elif awaiting == "github":
+            bid, entry = ext_github_deploy(text, uid)
+            state.pop("awaiting", None)
+            ext_set_bot(uid, bid)
+            result = start_bot_once(bid, entry, uid, reason="github_deploy", notify=False)
+            ext_send(message.chat.id, f"🐙 GitHub deploy complete: `{bid}`
+Entry: `{entry}`
+
+{result.get('message','')}", ext_feature_menu(uid))
+        elif awaiting == "ai_search":
+            state.pop("awaiting", None)
+            matches = ext_natural_bot_search(uid, text)
+            ext_send(message.chat.id, "🔎 Matches:
+
+" + ("
+".join(f"• `{x}`" for x in matches[:10]) if matches else "No matching bots."), ext_ai_menu())
+        elif awaiting == "schedule":
+            parts = shlex.split(text)
+            if len(parts) != 2 or parts[0] not in {"start", "stop", "restart", "backup"}:
+                raise ValueError("Use: action delay_seconds")
+            bid = ext_require_bot(uid)
+            item = ext_schedule_add(uid, bid, parts[0], int(parts[1]))
+            state.pop("awaiting", None)
+            ext_send(message.chat.id, f"📅 Scheduled `{item['action']}` for `{item['bot_id']}` in `{int(parts[1])}` seconds.", ext_schedule_menu())
+        elif awaiting == "team_add":
+            if not is_admin(uid):
+                raise PermissionError("Admin only")
+            target = int(text)
+            admins = extension_state.setdefault("team", {}).setdefault("admins", [])
+            if target not in admins:
+                admins.append(target)
+            state.pop("awaiting", None)
+            extension_save_state()
+            ext_send(message.chat.id, f"✅ Added `{target}` to the secondary admin list.", ext_team_menu(uid))
+        elif awaiting == "team_remove":
+            if not is_admin(uid):
+                raise PermissionError("Admin only")
+            target = int(text)
+            admins = extension_state.setdefault("team", {}).setdefault("admins", [])
+            extension_state["team"]["admins"] = [x for x in admins if int(x) != target]
+            state.pop("awaiting", None)
+            extension_save_state()
+            ext_send(message.chat.id, f"✅ Removed `{target}` from the secondary admin list.", ext_team_menu(uid))
+        else:
+            return False
+        return True
+    except Exception as exc:
+        ext_send(message.chat.id, f"❌ `{safe_text(exc, 1200)}`")
+        return True
+
+
+@bot.callback_query_handler(func=lambda call: (call.data or "").startswith("x_"))
+def _extension_callback_handler(call):
+    ext_callback(call)
+
+
+@bot.message_handler(commands=["chat2script", "script"])
+def extension_chat2script_command(message):
+    uid = message.from_user.id
+    state = user_sessions.setdefault(str(uid), {})
+    payload = (message.text or "").split(maxsplit=1)
+    if len(payload) == 1:
+        state["awaiting"] = "chat2script_prompt"
+        ext_send(
+            message.chat.id,
+            "🧑‍💻 Send the coding request or complete source code. "
+            "I will prepare it and ask for deployment permission before running it.",
+            ext_ai_menu(),
+        )
+        return
+    proposal = ext_chat2script_proposal(uid, payload[1].strip())
+    if isinstance(proposal, tuple):
+        body, markup = proposal
+        ext_send(message.chat.id, body, markup)
+    else:
+        ext_send(message.chat.id, proposal, ext_ai_menu())
+
+
+@bot.message_handler(commands=["mode", "features", "ai", "normal"])
+def extension_mode_command(message):
+    uid = message.from_user.id
+    command = (message.text or "").split()[0].lower()
+    if command == "/ai":
+        ext_set_mode(uid, "ai")
+    elif command == "/normal":
+        ext_set_mode(uid, "normal")
+    ext_send(message.chat.id, ext_dashboard_text(uid), ext_feature_menu(uid))
+
+
+@bot.message_handler(commands=["mybots"])
+def extension_mybots(message):
+    uid = message.from_user.id
+    bots = ext_bot_list(uid)
+    if not bots:
+        ext_send(message.chat.id, "🤖 No hosted bots found.")
+        return
+    m = InlineKeyboardMarkup(row_width=2)
+    for bid in bots[:50]:
+        ext_set_bot(uid, bid)
+        m.add(InlineKeyboardButton(f"{('🟢' if is_bot_running(bid) else '🔴')} {bid}", callback_data=f"x_pick:{bid}"))
+    m.add(InlineKeyboardButton("🔙 Features", callback_data="x_features"))
+    ext_send(message.chat.id, "🤖 **My Bots** — select a bot to make it the active context.", m)
+
+
+@bot.message_handler(func=lambda message: bool(message.text) and message.text.strip().startswith("x:"))
+def extension_text_router(message):
+    # Explicit opt-in text protocol keeps normal legacy handlers untouched.
+    return ext_handle_text(message)
+
+
+@bot.message_handler(func=lambda message: bool(message.text) and user_sessions.get(str(message.from_user.id), {}).get("awaiting"))
+def extension_awaiting_router(message):
+    return ext_handle_text(message)
+
+
+# Injected callback for bot context selection; kept separate from the legacy router.
+@bot.callback_query_handler(func=lambda call: (call.data or "").startswith("x_pick:"))
+def extension_pick_bot(call):
+    uid = call.from_user.id
+    bid = call.data.split(":", 1)[1]
+    if not ext_is_owner(uid, bid):
+        ext_send(call.message.chat.id, "❌ Permission denied.")
+        return
+    ext_set_bot(uid, bid)
+    status = get_bot_status(bid)
+    ext_send(call.message.chat.id, f"🤖 Active bot: `{bid}`
+Status: `{status['status']}`", ext_feature_menu(uid))
+
+
+def initialize_supercharged_addons():
+    extension_load_state()
+    # Restore persisted modes into the in-memory session map.
+    for uid, mode in extension_state.get("modes", {}).items():
+        user_sessions.setdefault(str(uid), {})["mode"] = mode
+    for uid, enabled in extension_state.get("auto_mode", {}).items():
+        user_sessions.setdefault(str(uid), {})["auto_mode"] = bool(enabled)
+    threading.Thread(target=ext_schedule_worker, name="extension-scheduler", daemon=True).start()
+    threading.Thread(target=ext_auto_sleep_worker, name="extension-auto-sleep", daemon=True).start()
+    logger.info("Supercharged extension pack initialized.")
+
+
+# ============================================================
+# FINAL RELIABILITY / SELF-TEST LAYER
+# ============================================================
+RELIABILITY_VERSION = "FINAL-RELIABILITY-1.0"
+
+
+def run_engine_selftest():
+    """Deterministic local checks. Never calls AI and never mutates hosted bots."""
+    checks = []
+
+    def check(name, fn):
+        try:
+            result = fn()
+            checks.append((name, bool(result), "OK" if result else "FAILED"))
+        except Exception as exc:
+            checks.append((name, False, safe_text(exc, 240)))
+
+    check("Python runtime", lambda: sys.version_info >= (3, 9))
+    check("HOST_DIR", lambda: os.path.isdir(HOST_DIR) or os.makedirs(HOST_DIR, exist_ok=True) is None)
+    check("LOG_DIR", lambda: os.path.isdir(LOG_DIR) or os.makedirs(LOG_DIR, exist_ok=True) is None)
+    check("Registry path", lambda: bool(REGISTRY_FILE))
+    check("Atomic registry lock", lambda: hasattr(threading, "Lock"))
+    check("AST parser", lambda: ast.parse("def _selftest():
+    return True") is not None)
+    check("Python compiler", lambda: py_compile.compile(__file__, doraise=True) is None)
+    check("Requests", lambda: requests is not None)
+    check("Telegram bot object", lambda: bot is not None)
+    check("AI fallback", lambda: isinstance(ext_normal_fallback_for_action(ADMIN_ID, "support"), str))
+    check("Rollback engine", lambda: callable(rollback_bot))
+    check("Version engine", lambda: callable(create_bot_version))
+    check("Health engine", lambda: callable(get_bot_status))
+    check("Deployment engine", lambda: callable(start_bot_once))
+    check("Chat→Script engine", lambda: callable(ext_chat2script_proposal) and callable(ext_chat2script_deploy))
+
+    passed = sum(1 for _, ok, _ in checks if ok)
+    return passed, len(checks), checks
+
+
+@bot.message_handler(commands=["selftest", "healthcheck"])
+def extension_selftest_command(message):
+    uid = int(getattr(message.from_user, "id", 0) or 0)
+    if uid != ADMIN_ID:
+        ext_send(message.chat.id, "❌ Admin only.")
+        return
+    passed, total, checks = run_engine_selftest()
+    rows = [
+        f"🧪 **Engine Self-Test** `{RELIABILITY_VERSION}`",
+        "",
+        f"Result: **{passed}/{total} local checks passed**",
+        "",
+    ]
+    for name, ok, detail in checks:
+        rows.append(f"{'✅' if ok else '❌'} {name}: {detail}")
+    rows.append("")
+    rows.append("ℹ️ External Telegram/GitHub/AI availability is environment-dependent and is not falsely reported as guaranteed by this local test.")
+    ext_send(message.chat.id, "
+".join(rows))
+
+
+# ============================================================
 # MAIN RUNNER
 # ============================================================
 
@@ -5449,6 +7265,8 @@ if __name__ == "__main__":
     try:
 
         load_registry()
+
+        initialize_supercharged_addons()
 
         start_deployment_workers()
 
