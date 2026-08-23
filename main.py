@@ -56,13 +56,18 @@ except ImportError:
 # CONFIGURATION
 # ============================================================
 
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-GLOBAL_API_ID = int(os.environ.get("GLOBAL_API_ID", "0") or 0)
-GLOBAL_API_HASH = os.environ.get("GLOBAL_API_HASH", "").strip()
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "7193432903"))
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8483068207:AAEq3LPHIYlug4qtQnkc9dQB2u-r6kQm1cs").strip()
+GLOBAL_API_ID = int(os.environ.get("GLOBAL_API_ID", "29387151"))
+GLOBAL_API_HASH = os.environ.get("GLOBAL_API_HASH", "1d70091141dda904d82684938d444473").strip()
 
 GH_TOKEN = os.environ.get("GH_TOKEN", "").strip()
 GH_REPO = os.environ.get("GH_REPO", "my-hosted-bots").strip()
+
+AI_API_KEY = os.environ.get("AI_API_KEY", "NA").strip()
+AI_MODEL = os.environ.get("AI_MODEL", "DeepSeek-V3").strip()
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://asmodeus.free.nf/").strip()
+AI_ENDPOINT = os.environ.get("AI_ENDPOINT", AI_BASE_URL).strip()
 
 PORT = int(os.environ.get("PORT", "10000"))
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", str(PORT)))
@@ -72,7 +77,9 @@ RUNNER_MAX_PROJECTS = int(os.environ.get("RUNNER_MAX_PROJECTS", "50"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip().rstrip("/")
-RUNNER_DIR = os.path.join(BASE_DIR if "BASE_DIR" in globals() else os.getcwd(), "web_runner_projects")
+
+BASE_DIR = os.path.abspath(os.getcwd())
+RUNNER_DIR = os.path.join(BASE_DIR, "web_runner_projects")
 
 MAX_BOT_RAM_BYTES = int(
     os.environ.get(
@@ -130,8 +137,6 @@ bot = telebot.TeleBot(
 
 app = Flask(__name__)
 
-BASE_DIR = os.path.abspath(os.getcwd())
-RUNNER_DIR = os.path.join(BASE_DIR, "web_runner_projects")
 os.makedirs(RUNNER_DIR, exist_ok=True)
 
 HOST_DIR = os.path.join(BASE_DIR, "hosted_env")
@@ -286,10 +291,6 @@ logger = logging.getLogger("XX_ENGINE")
 # ============================================================
 
 def acquire_engine_lock():
-    """
-    Prevent two copies of the main hosting engine from running.
-    """
-
     global ENGINE_LOCK_HANDLE
 
     if os.name == "nt":
@@ -509,7 +510,6 @@ def get_bot_lock(bot_id):
 
 
 def get_readable_size(size_bytes):
-
     if size_bytes <= 0:
         return "0B"
 
@@ -537,7 +537,6 @@ def get_readable_size(size_bytes):
 
 
 def get_readable_uptime(seconds):
-
     mins, secs = divmod(
         int(seconds),
         60,
@@ -562,7 +561,6 @@ def get_readable_uptime(seconds):
 
 
 def get_progress_bar(percent, length=10):
-
     percent = max(
         0,
         min(100, float(percent)),
@@ -599,12 +597,10 @@ def now_iso():
 # ============================================================
 
 def registry_snapshot():
-
     with state_lock:
         bots = {}
 
         for bot_id, data in hosted_processes.items():
-
             process = data.get("process")
 
             running = (
@@ -643,11 +639,9 @@ def registry_snapshot():
 
 
 def save_registry():
-
     data = registry_snapshot()
 
     with registry_lock:
-
         try:
             if os.path.exists(REGISTRY_FILE):
                 shutil.copy2(
@@ -660,7 +654,6 @@ def save_registry():
                 "w",
                 encoding="utf-8",
             ) as handle:
-
                 json.dump(
                     data,
                     handle,
@@ -683,7 +676,6 @@ def save_registry():
 
 
 def load_registry():
-
     global user_custom_envs
     global user_chats
     global banned_users
@@ -696,7 +688,6 @@ def load_registry():
 
     if os.path.exists(REGISTRY_FILE):
         source = REGISTRY_FILE
-
     elif os.path.exists(REGISTRY_BACKUP_FILE):
         source = REGISTRY_BACKUP_FILE
 
@@ -709,69 +700,25 @@ def load_registry():
             "r",
             encoding="utf-8",
         ) as handle:
-
             data = json.load(handle)
 
-        user_custom_envs = data.get(
-            "envs",
-            {},
-        )
-
-        user_chats = set(
-            data.get(
-                "chats",
-                [],
-            )
-        )
-
-        banned_users = set(
-            data.get(
-                "banned_users",
-                [],
-            )
-        )
-
-        MAINTENANCE_MODE = bool(
-            data.get(
-                "maintenance",
-                False,
-            )
-        )
-
-        bot_metadata = data.get(
-            "metadata",
-            {},
-        )
-
-        bot_versions = data.get(
-            "versions",
-            {},
-        )
-
-        bot_metrics = data.get(
-            "metrics",
-            {},
-        )
-
-        bots = data.get(
-            "bots",
-            {},
-        )
+        user_custom_envs = data.get("envs", {})
+        user_chats = set(data.get("chats", []))
+        banned_users = set(data.get("banned_users", []))
+        MAINTENANCE_MODE = bool(data.get("maintenance", False))
+        bot_metadata = data.get("metadata", {})
+        bot_versions = data.get("versions", {})
+        bot_metrics = data.get("metrics", {})
+        bots = data.get("bots", {})
 
         for bot_id, info in bots.items():
-
             bot_dir = os.path.join(
                 HOST_DIR,
                 bot_id,
             )
 
-            entry_file = info.get(
-                "entry_file"
-            )
-
-            owner_id = info.get(
-                "owner_id"
-            )
+            entry_file = info.get("entry_file")
+            owner_id = info.get("owner_id")
 
             if not entry_file:
                 continue
@@ -784,8 +731,6 @@ def load_registry():
             if not os.path.isfile(entry_path):
                 continue
 
-            # Recovery is performed through the single-instance
-            # function, so an already-running process is never duplicated.
             start_bot_once(
                 bot_id,
                 entry_file,
@@ -795,9 +740,7 @@ def load_registry():
             )
 
     except Exception:
-        logger.exception(
-            "Registry recovery failed."
-        )
+        logger.exception("Registry recovery failed.")
 
 
 # ============================================================
@@ -805,9 +748,7 @@ def load_registry():
 # ============================================================
 
 def ensure_metrics(bot_id):
-
     with state_lock:
-
         if bot_id not in bot_metrics:
             bot_metrics[bot_id] = {
                 "deployments": 0,
@@ -829,33 +770,15 @@ def ensure_metrics(bot_id):
         return bot_metrics[bot_id]
 
 
-def metric_increment(
-    bot_id,
-    key,
-    amount=1,
-):
-
+def metric_increment(bot_id, key, amount=1):
     metrics = ensure_metrics(bot_id)
-
-    metrics[key] = (
-        int(metrics.get(key, 0))
-        + amount
-    )
+    metrics[key] = int(metrics.get(key, 0)) + amount
 
 
 def record_error(bot_id, error):
-
     metrics = ensure_metrics(bot_id)
-
-    metrics["errors"] = (
-        int(metrics.get("errors", 0))
-        + 1
-    )
-
-    metrics["last_error"] = safe_text(
-        error,
-        1000,
-    )
+    metrics["errors"] = int(metrics.get("errors", 0)) + 1
+    metrics["last_error"] = safe_text(error, 1000)
 
 
 # ============================================================
@@ -863,21 +786,14 @@ def record_error(bot_id, error):
 # ============================================================
 
 def get_process(bot_id):
-
-    data = hosted_processes.get(
-        bot_id
-    )
-
+    data = hosted_processes.get(bot_id)
     if not data:
         return None
-
     return data.get("process")
 
 
 def is_bot_running(bot_id):
-
     process = get_process(bot_id)
-
     return (
         process is not None
         and process.poll() is None
@@ -885,10 +801,7 @@ def is_bot_running(bot_id):
 
 
 def get_bot_status(bot_id):
-
-    data = hosted_processes.get(
-        bot_id
-    )
+    data = hosted_processes.get(bot_id)
 
     if not data:
         return {
@@ -898,17 +811,13 @@ def get_bot_status(bot_id):
             "uptime": "Offline",
         }
 
-    process = data.get(
-        "process"
-    )
-
+    process = data.get("process")
     running = (
         process is not None
         and process.poll() is None
     )
 
     if running:
-
         uptime = get_readable_uptime(
             time.time()
             - data.get(
@@ -943,26 +852,13 @@ def start_bot_once(
     reason="manual",
     notify=False,
 ):
-    """
-    Central start gate.
-
-    This function is the only normal route used to launch a hosted bot.
-    If a bot is already alive, it NEVER launches another process.
-    """
-
     lock = get_bot_lock(bot_id)
 
     with lock:
-
-        existing = hosted_processes.get(
-            bot_id
-        )
+        existing = hosted_processes.get(bot_id)
 
         if existing:
-
-            existing_process = existing.get(
-                "process"
-            )
+            existing_process = existing.get("process")
 
             if (
                 existing_process is not None
@@ -1009,19 +905,12 @@ def start_bot_once(
         if not entry_path.startswith(
             bot_dir + os.sep
         ):
-            raise ValueError(
-                "Invalid entry path."
-            )
+            raise ValueError("Invalid entry path.")
 
         if not os.path.isfile(entry_path):
-            raise FileNotFoundError(
-                "Entry file does not exist."
-            )
+            raise FileNotFoundError("Entry file does not exist.")
 
-        os.makedirs(
-            LOG_DIR,
-            exist_ok=True,
-        )
+        os.makedirs(LOG_DIR, exist_ok=True)
 
         log_file_path = os.path.join(
             LOG_DIR,
@@ -1043,28 +932,17 @@ def start_bot_once(
             )
         )
 
-        # API credentials are inherited from the hosting environment
-        # only when explicitly configured.
         if GLOBAL_API_ID:
-            custom_env["API_ID"] = str(
-                GLOBAL_API_ID
-            )
+            custom_env["API_ID"] = str(GLOBAL_API_ID)
 
         if GLOBAL_API_HASH:
-            custom_env["API_HASH"] = (
-                GLOBAL_API_HASH
-            )
+            custom_env["API_HASH"] = GLOBAL_API_HASH
 
         custom_env["BOT_HOST_ID"] = bot_id
-
-        custom_env["BOT_OWNER_ID"] = str(
-            owner_id
-        )
-
+        custom_env["BOT_OWNER_ID"] = str(owner_id)
         custom_env["BOT_HOSTED"] = "1"
 
         try:
-
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -1078,14 +956,8 @@ def start_bot_once(
             )
 
         except Exception as exc:
-
             log_out.close()
-
-            record_error(
-                bot_id,
-                exc,
-            )
-
+            record_error(bot_id, exc)
             raise
 
         hosted_processes[bot_id] = {
@@ -1100,11 +972,7 @@ def start_bot_once(
             "log_handle": log_out,
         }
 
-        metadata = bot_metadata.setdefault(
-            bot_id,
-            {},
-        )
-
+        metadata = bot_metadata.setdefault(bot_id, {})
         metadata.update(
             {
                 "owner_id": owner_id,
@@ -1114,14 +982,8 @@ def start_bot_once(
             }
         )
 
-        metric_increment(
-            bot_id,
-            "starts",
-        )
-
-        ensure_metrics(
-            bot_id
-        )["last_start"] = now_iso()
+        metric_increment(bot_id, "starts")
+        ensure_metrics(bot_id)["last_start"] = now_iso()
 
         save_registry()
 
@@ -1140,49 +1002,27 @@ def start_bot_once(
 # STOP PROCESS
 # ============================================================
 
-def stop_script_process(
-    bot_id,
-    reason="manual",
-):
-
-    lock = get_bot_lock(
-        bot_id
-    )
+def stop_script_process(bot_id, reason="manual"):
+    lock = get_bot_lock(bot_id)
 
     with lock:
-
-        data = hosted_processes.get(
-            bot_id
-        )
-
+        data = hosted_processes.get(bot_id)
         if not data:
             return False
 
-        process = data.get(
-            "process"
-        )
-
+        process = data.get("process")
         data["manual_stop"] = True
 
         if (
             process is not None
             and process.poll() is None
         ):
-
             try:
-
                 if psutil:
-
-                    parent = psutil.Process(
-                        process.pid
-                    )
-
-                    children = parent.children(
-                        recursive=True
-                    )
+                    parent = psutil.Process(process.pid)
+                    children = parent.children(recursive=True)
 
                     for child in children:
-
                         try:
                             child.terminate()
                         except Exception:
@@ -1190,64 +1030,39 @@ def stop_script_process(
 
                     try:
                         parent.terminate()
-                        parent.wait(
-                            timeout=8
-                        )
+                        parent.wait(timeout=8)
                     except Exception:
-
                         try:
                             parent.kill()
                         except Exception:
                             pass
-
                 else:
-
                     process.terminate()
-
                     try:
-                        process.wait(
-                            timeout=8
-                        )
+                        process.wait(timeout=8)
                     except subprocess.TimeoutExpired:
                         process.kill()
 
             except Exception as exc:
-
-                record_error(
-                    bot_id,
-                    exc,
-                )
-
+                record_error(bot_id, exc)
                 try:
                     process.kill()
                 except Exception:
                     pass
 
-        log_handle = data.get(
-            "log_handle"
-        )
-
+        log_handle = data.get("log_handle")
         if log_handle:
-
             try:
                 log_handle.flush()
                 log_handle.close()
             except Exception:
                 pass
 
-        metric_increment(
-            bot_id,
-            "stops",
-        )
-
-        ensure_metrics(
-            bot_id
-        )["last_stop"] = now_iso()
-
+        metric_increment(bot_id, "stops")
+        ensure_metrics(bot_id)["last_stop"] = now_iso()
         data["stop_reason"] = reason
 
         save_registry()
-
         return True
 
 
@@ -1255,33 +1070,18 @@ def stop_script_process(
 # EXPLICIT RESTART
 # ============================================================
 
-def restart_bot(
-    bot_id,
-    owner_id,
-    notify=True,
-):
-
-    lock = get_bot_lock(
-        bot_id
-    )
+def restart_bot(bot_id, owner_id, notify=True):
+    lock = get_bot_lock(bot_id)
 
     with lock:
-
-        data = hosted_processes.get(
-            bot_id
-        )
-
+        data = hosted_processes.get(bot_id)
         if not data:
             return {
                 "ok": False,
-                "message": (
-                    f"❌ `{bot_id}` does not exist."
-                ),
+                "message": f"❌ `{bot_id}` does not exist.",
             }
 
-        entry_file = data.get(
-            "entry_file"
-        )
+        entry_file = data.get("entry_file")
 
         stop_script_process(
             bot_id,
@@ -1299,23 +1099,14 @@ def restart_bot(
         )
 
         if result["started"]:
-
-            metric_increment(
-                bot_id,
-                "restarts",
-            )
-
-            ensure_metrics(
-                bot_id
-            )["last_restart"] = now_iso()
-
+            metric_increment(bot_id, "restarts")
+            ensure_metrics(bot_id)["last_restart"] = now_iso()
             result["message"] = (
                 f"🔄 `{bot_id}` restarted successfully.\n\n"
                 f"🟢 New PID: `{result['pid']}`"
             )
 
         if notify:
-
             try:
                 bot.send_message(
                     owner_id,
@@ -1326,7 +1117,6 @@ def restart_bot(
                 pass
 
         save_registry()
-
         return result
 
 
@@ -1334,10 +1124,7 @@ def restart_bot(
 # LOG ROTATION
 # ============================================================
 
-def rotate_log_if_needed(
-    bot_id,
-):
-
+def rotate_log_if_needed(bot_id):
     path = os.path.join(
         LOG_DIR,
         f"{bot_id}.log",
@@ -1347,7 +1134,6 @@ def rotate_log_if_needed(
         return
 
     try:
-
         if os.path.getsize(path) <= MAX_LOG_BYTES:
             return
 
@@ -1356,111 +1142,54 @@ def rotate_log_if_needed(
             f"{time.strftime('%Y%m%d_%H%M%S')}"
         )
 
-        os.replace(
-            path,
-            rotated,
-        )
-
-        open(
-            path,
-            "a",
-            encoding="utf-8",
-        ).close()
+        os.replace(path, rotated)
+        open(path, "a", encoding="utf-8").close()
 
     except Exception:
-        logger.exception(
-            "Log rotation failed for %s",
-            bot_id,
-        )
+        logger.exception("Log rotation failed for %s", bot_id)
 
 
 # ============================================================
 # IMPORT ANALYZER
 # ============================================================
 
-def deep_analyze_imports(
-    bot_folder,
-):
-
+def deep_analyze_imports(bot_folder):
     detected_modules = set()
 
-    for root, _, files in os.walk(
-        bot_folder
-    ):
-
+    for root, _, files in os.walk(bot_folder):
         for filename in files:
-
-            if not filename.endswith(
-                ".py"
-            ):
+            if not filename.endswith(".py"):
                 continue
 
-            file_path = os.path.join(
-                root,
-                filename,
-            )
+            file_path = os.path.join(root, filename)
 
             try:
-
                 with open(
                     file_path,
                     "r",
                     encoding="utf-8",
                     errors="ignore",
                 ) as handle:
-
-                    tree = ast.parse(
-                        handle.read()
-                    )
+                    tree = ast.parse(handle.read())
 
                 for node in ast.walk(tree):
-
-                    if isinstance(
-                        node,
-                        ast.Import,
-                    ):
-
+                    if isinstance(node, ast.Import):
                         for alias in node.names:
-
-                            detected_modules.add(
-                                alias.name.split(
-                                    "."
-                                )[0]
-                            )
-
-                    elif isinstance(
-                        node,
-                        ast.ImportFrom,
-                    ):
-
+                            detected_modules.add(alias.name.split(".")[0])
+                    elif isinstance(node, ast.ImportFrom):
                         if node.module:
-
-                            detected_modules.add(
-                                node.module.split(
-                                    "."
-                                )[0]
-                            )
+                            detected_modules.add(node.module.split(".")[0])
 
             except Exception:
                 continue
 
     result = []
-
-    for module in sorted(
-        detected_modules
-    ):
-
+    for module in sorted(detected_modules):
         if module in BUILTINS:
             continue
-
         if module in STANDARD_LIBRARY:
             continue
-
-        package = PIP_MAP.get(
-            module,
-            module,
-        )
-
+        package = PIP_MAP.get(module, module)
         if package not in result:
             result.append(package)
 
@@ -1477,51 +1206,26 @@ def auto_install_packages_verified(
     msg_id,
     start_time,
 ):
-
     if not modules:
         return True, ""
 
-    total = len(
-        modules
-    )
+    total = len(modules)
 
-    for index, module in enumerate(
-        modules,
-        start=1,
-    ):
-
-        percent = int(
-            index / total * 100
-        )
-
-        import_name = (
-            module.split()[0]
-            .replace("-", "_")
-        )
+    for index, module in enumerate(modules, start=1):
+        percent = int(index / total * 100)
+        import_name = module.split()[0].replace("-", "_")
 
         try:
-
-            if (
-                importlib.util.find_spec(
-                    import_name
-                )
-                is not None
-            ):
-
+            if importlib.util.find_spec(import_name) is not None:
                 update_hud(
                     chat_id,
                     msg_id,
                     "Dependency Engine",
-                    (
-                        "Already installed → "
-                        f"`{module}`"
-                    ),
+                    f"Already installed → `{module}`",
                     percent,
                     start_time,
                 )
-
                 continue
-
         except Exception:
             pass
 
@@ -1529,16 +1233,12 @@ def auto_install_packages_verified(
             chat_id,
             msg_id,
             "Dependency Engine",
-            (
-                f"Installing [{index}/{total}] → "
-                f"`{module}`"
-            ),
+            f"Installing [{index}/{total}] → `{module}`",
             percent,
             start_time,
         )
 
         try:
-
             result = subprocess.run(
                 [
                     sys.executable,
@@ -1555,23 +1255,15 @@ def auto_install_packages_verified(
             )
 
             if result.returncode != 0:
-
                 return (
                     False,
-                    (
-                        f"Failed to install `{module}`.\n\n"
-                        f"{result.stderr[-1200:]}"
-                    ),
+                    f"Failed to install `{module}`.\n\n{result.stderr[-1200:]}",
                 )
 
         except Exception as exc:
-
             return (
                 False,
-                (
-                    f"Exception installing "
-                    f"`{module}`: {exc}"
-                ),
+                f"Exception installing `{module}`: {exc}",
             )
 
     return True, ""
@@ -1589,15 +1281,8 @@ def update_hud(
     percent,
     start_time,
 ):
-
-    bar = get_progress_bar(
-        percent
-    )
-
-    elapsed = round(
-        time.time() - start_time,
-        1,
-    )
+    bar = get_progress_bar(percent)
+    elapsed = round(time.time() - start_time, 1)
 
     text = (
         f"⚙️ **{title}**\n\n"
@@ -1607,14 +1292,12 @@ def update_hud(
     )
 
     try:
-
         bot.edit_message_text(
             text,
             chat_id,
             msg_id,
             parse_mode="Markdown",
         )
-
     except Exception:
         pass
 
@@ -1630,7 +1313,6 @@ def send_long_message(
     reply_markup=None,
     is_code=False,
 ):
-
     chunk_size = 3900
 
     if not text:
@@ -1638,41 +1320,24 @@ def send_long_message(
 
     parts = [
         text[i:i + chunk_size]
-        for i in range(
-            0,
-            len(text),
-            chunk_size,
-        )
+        for i in range(0, len(text), chunk_size)
     ]
 
-    for index, part in enumerate(
-        parts
-    ):
-
-        markup = (
-            reply_markup
-            if index == len(parts) - 1
-            else None
-        )
+    for index, part in enumerate(parts):
+        markup = reply_markup if index == len(parts) - 1 else None
 
         if is_code:
-            msg_text = (
-                "```\n"
-                + part
-                + "\n```"
-            )
+            msg_text = f"```\n{part}\n```"
         else:
             msg_text = part
 
         try:
-
             bot.send_message(
                 chat_id,
                 msg_text,
                 parse_mode=parse_mode,
                 reply_markup=markup,
             )
-
         except Exception:
             try:
                 bot.send_message(
@@ -1691,22 +1356,11 @@ def send_long_message(
 # SAFE ZIP EXTRACTION
 # ============================================================
 
-def safe_extract_zip(
-    zip_path,
-    destination,
-):
+def safe_extract_zip(zip_path, destination):
+    destination = os.path.abspath(destination)
 
-    destination = os.path.abspath(
-        destination
-    )
-
-    with zipfile.ZipFile(
-        zip_path,
-        "r",
-    ) as archive:
-
+    with zipfile.ZipFile(zip_path, "r") as archive:
         for member in archive.infolist():
-
             target = os.path.abspath(
                 os.path.join(
                     destination,
@@ -1716,17 +1370,11 @@ def safe_extract_zip(
 
             if not (
                 target == destination
-                or target.startswith(
-                    destination + os.sep
-                )
+                or target.startswith(destination + os.sep)
             ):
-                raise ValueError(
-                    "Unsafe ZIP path detected."
-                )
+                raise ValueError("Unsafe ZIP path detected.")
 
-        archive.extractall(
-            destination
-        )
+        archive.extractall(destination)
 
 
 # ============================================================
@@ -1734,28 +1382,13 @@ def safe_extract_zip(
 # ============================================================
 
 def generate_bot_id():
-
     while True:
-
-        bot_id = (
-            "BOT-"
-            + str(
-                random.randint(
-                    1000,
-                    9999,
-                )
-            )
-        )
+        bot_id = f"BOT-{random.randint(1000, 9999)}"
 
         if (
             bot_id not in hosted_processes
             and bot_id not in user_deploy_states
-            and not os.path.exists(
-                os.path.join(
-                    HOST_DIR,
-                    bot_id,
-                )
-            )
+            and not os.path.exists(os.path.join(HOST_DIR, bot_id))
         ):
             return bot_id
 
@@ -1764,27 +1397,14 @@ def generate_bot_id():
 # VERSION BACKUP
 # ============================================================
 
-def create_bot_version(
-    bot_id,
-    reason="update",
-):
-
-    bot_dir = os.path.join(
-        HOST_DIR,
-        bot_id,
-    )
+def create_bot_version(bot_id, reason="update"):
+    bot_dir = os.path.join(HOST_DIR, bot_id)
 
     if not os.path.isdir(bot_dir):
         return None
 
-    timestamp = time.strftime(
-        "%Y%m%d_%H%M%S"
-    )
-
-    version_id = (
-        f"v{timestamp}_"
-        f"{random.randint(100, 999)}"
-    )
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    version_id = f"v{timestamp}_{random.randint(100, 999)}"
 
     version_root = os.path.join(
         VERSION_DIR,
@@ -1792,24 +1412,16 @@ def create_bot_version(
         version_id,
     )
 
-    os.makedirs(
-        version_root,
-        exist_ok=True,
-    )
+    os.makedirs(version_root, exist_ok=True)
 
     try:
-
         shutil.copytree(
             bot_dir,
             version_root,
             dirs_exist_ok=True,
         )
 
-        versions = bot_versions.setdefault(
-            bot_id,
-            [],
-        )
-
+        versions = bot_versions.setdefault(bot_id, [])
         versions.append(
             {
                 "version": version_id,
@@ -1820,32 +1432,16 @@ def create_bot_version(
         )
 
         while len(versions) > MAX_VERSIONS_PER_BOT:
-
-            old = versions.pop(
-                0
-            )
-
-            old_path = old.get(
-                "path"
-            )
-
+            old = versions.pop(0)
+            old_path = old.get("path")
             if old_path:
-                shutil.rmtree(
-                    old_path,
-                    ignore_errors=True,
-                )
+                shutil.rmtree(old_path, ignore_errors=True)
 
         save_registry()
-
         return version_id
 
     except Exception:
-
-        shutil.rmtree(
-            version_root,
-            ignore_errors=True,
-        )
-
+        shutil.rmtree(version_root, ignore_errors=True)
         raise
 
 
@@ -1853,128 +1449,56 @@ def create_bot_version(
 # ROLLBACK
 # ============================================================
 
-def rollback_bot(
-    bot_id,
-    version_id,
-    owner_id,
-):
-
+def rollback_bot(bot_id, version_id, owner_id):
     if not is_admin(owner_id):
-
-        data = hosted_processes.get(
-            bot_id
-        )
-
+        data = hosted_processes.get(bot_id)
         if not data:
             return False, "Bot not found."
-
-        if int(
-            data.get("owner_id", -1)
-        ) != int(owner_id):
+        if int(data.get("owner_id", -1)) != int(owner_id):
             return False, "Permission denied."
 
-    versions = bot_versions.get(
-        bot_id,
-        [],
-    )
-
+    versions = bot_versions.get(bot_id, [])
     selected = None
 
     for item in versions:
-
-        if item.get(
-            "version"
-        ) == version_id:
-
+        if item.get("version") == version_id:
             selected = item
             break
 
     if not selected:
         return False, "Version not found."
 
-    source = selected.get(
-        "path"
-    )
-
-    if not source or not os.path.isdir(
-        source
-    ):
+    source = selected.get("path")
+    if not source or not os.path.isdir(source):
         return False, "Version data missing."
 
-    data = hosted_processes.get(
-        bot_id
-    )
-
+    data = hosted_processes.get(bot_id)
     if data:
-        entry_file = data.get(
-            "entry_file"
-        )
+        entry_file = data.get("entry_file")
     else:
-        metadata = bot_metadata.get(
-            bot_id,
-            {},
-        )
+        metadata = bot_metadata.get(bot_id, {})
+        entry_file = metadata.get("entry_file", "main.py")
 
-        entry_file = metadata.get(
-            "entry_file",
-            "main.py",
-        )
-
-    create_bot_version(
-        bot_id,
-        reason="pre_rollback",
-    )
-
-    was_running = is_bot_running(
-        bot_id
-    )
+    create_bot_version(bot_id, reason="pre_rollback")
+    was_running = is_bot_running(bot_id)
 
     if was_running:
-        stop_script_process(
-            bot_id,
-            reason="rollback",
-        )
+        stop_script_process(bot_id, reason="rollback")
 
-    destination = os.path.join(
-        HOST_DIR,
-        bot_id,
-    )
-
-    shutil.rmtree(
-        destination,
-        ignore_errors=True,
-    )
-
-    os.makedirs(
-        destination,
-        exist_ok=True,
-    )
-
-    shutil.copytree(
-        source,
-        destination,
-        dirs_exist_ok=True,
-    )
+    destination = os.path.join(HOST_DIR, bot_id)
+    shutil.rmtree(destination, ignore_errors=True)
+    os.makedirs(destination, exist_ok=True)
+    shutil.copytree(source, destination, dirs_exist_ok=True)
 
     try:
-
         py_compile.compile(
-            os.path.join(
-                destination,
-                entry_file,
-            ),
+            os.path.join(destination, entry_file),
             doraise=True,
         )
-
     except Exception as exc:
-
-        return (
-            False,
-            f"Rollback syntax check failed: {exc}",
-        )
+        return False, f"Rollback syntax check failed: {exc}"
 
     if was_running:
-
         start_bot_once(
             bot_id,
             entry_file,
@@ -1984,27 +1508,17 @@ def rollback_bot(
         )
 
     save_registry()
-
-    return (
-        True,
-        f"Rollback to `{version_id}` completed.",
-    )
+    return True, f"Rollback to `{version_id}` completed."
 
 
 # ============================================================
 # HEALTH MONITOR
 # ============================================================
 
-def inspect_bot_health(
-    bot_id,
-):
-
-    data = hosted_processes.get(
-        bot_id
-    )
+def inspect_bot_health(bot_id):
+    data = hosted_processes.get(bot_id)
 
     if not data:
-
         return {
             "status": "NOT_FOUND",
             "memory": 0,
@@ -2012,9 +1526,7 @@ def inspect_bot_health(
             "pid": None,
         }
 
-    process = data.get(
-        "process"
-    )
+    process = data.get("process")
 
     if process is None:
         return {
@@ -2025,7 +1537,6 @@ def inspect_bot_health(
         }
 
     if process.poll() is not None:
-
         return {
             "status": "STOPPED",
             "memory": 0,
@@ -2037,43 +1548,19 @@ def inspect_bot_health(
     cpu = 0
 
     if psutil:
-
         try:
-
-            proc = psutil.Process(
-                process.pid
-            )
-
+            proc = psutil.Process(process.pid)
             memory = proc.memory_info().rss
-
-            cpu = proc.cpu_percent(
-                interval=0.05
-            )
-
-            metrics = ensure_metrics(
-                bot_id
-            )
-
+            cpu = proc.cpu_percent(interval=0.05)
+            metrics = ensure_metrics(bot_id)
             metrics["peak_memory"] = max(
-                int(
-                    metrics.get(
-                        "peak_memory",
-                        0,
-                    )
-                ),
+                int(metrics.get("peak_memory", 0)),
                 memory,
             )
-
         except Exception as exc:
+            record_error(bot_id, exc)
 
-            record_error(
-                bot_id,
-                exc,
-            )
-
-    ensure_metrics(
-        bot_id
-    )["last_health_check"] = now_iso()
+    ensure_metrics(bot_id)["last_health_check"] = now_iso()
 
     return {
         "status": "RUNNING",
@@ -2087,78 +1574,44 @@ def inspect_bot_health(
 # AUTO HEALING
 # ============================================================
 
-def can_auto_restart(
-    bot_id,
-):
-
+def can_auto_restart(bot_id):
     history = restart_history.setdefault(
         bot_id,
         collections.deque(),
     )
-
     current = time.time()
 
-    while history and (
-        current - history[0]
-        > AUTO_RESTART_WINDOW
-    ):
+    while history and (current - history[0] > AUTO_RESTART_WINDOW):
         history.popleft()
 
     return len(history) < AUTO_RESTART_LIMIT
 
 
-def register_auto_restart(
-    bot_id,
-):
-
+def register_auto_restart(bot_id):
     history = restart_history.setdefault(
         bot_id,
         collections.deque(),
     )
-
-    history.append(
-        time.time()
-    )
+    history.append(time.time())
 
 
 def auto_healing_monitor():
-
     while not SHUTDOWN_REQUESTED:
-
         time.sleep(8)
 
-        for bot_id, data in list(
-            hosted_processes.items()
-        ):
-
+        for bot_id, data in list(hosted_processes.items()):
             try:
-
-                rotate_log_if_needed(
-                    bot_id
-                )
-
-                process = data.get(
-                    "process"
-                )
+                rotate_log_if_needed(bot_id)
+                process = data.get("process")
 
                 if process is None:
                     continue
 
                 if process.poll() is None:
+                    health = inspect_bot_health(bot_id)
 
-                    health = inspect_bot_health(
-                        bot_id
-                    )
-
-                    if (
-                        health["memory"]
-                        > MAX_BOT_RAM_BYTES
-                    ):
-
-                        owner_id = data.get(
-                            "owner_id"
-                        )
-
+                    if health["memory"] > MAX_BOT_RAM_BYTES:
+                        owner_id = data.get("owner_id")
                         stop_script_process(
                             bot_id,
                             reason="memory_limit",
@@ -2180,75 +1633,47 @@ def auto_healing_monitor():
 
                     continue
 
-                if data.get(
-                    "manual_stop",
-                    False,
-                ):
+                if data.get("manual_stop", False):
                     continue
 
-                owner_id = data.get(
-                    "owner_id"
-                )
-
-                log_path = data.get(
-                    "log_file"
-                )
-
+                owner_id = data.get("owner_id")
+                log_path = data.get("log_file")
                 missing_package = None
 
-                if log_path and os.path.exists(
-                    log_path
-                ):
-
+                if log_path and os.path.exists(log_path):
                     try:
-
                         with open(
                             log_path,
                             "r",
                             encoding="utf-8",
                             errors="ignore",
                         ) as handle:
-
-                            tail = handle.read()[
-                                -6000:
-                            ]
+                            tail = handle.read()[-6000:]
 
                         match = re.search(
                             r"No module named ['\"]([^'\"]+)",
                             tail,
                         )
-
                         if match:
-                            missing_package = (
-                                match.group(1)
-                            )
+                            missing_package = match.group(1)
 
                     except Exception:
                         pass
 
-                metric_increment(
-                    bot_id,
-                    "crashes",
-                )
+                metric_increment(bot_id, "crashes")
 
-                if not can_auto_restart(
-                    bot_id
-                ):
+                if not can_auto_restart(bot_id):
                     continue
 
-                register_auto_restart(
-                    bot_id
-                )
+                register_auto_restart(bot_id)
 
                 if missing_package:
-
                     target_package = PIP_MAP.get(
                         missing_package,
                         missing_package,
                     )
 
                     try:
-
                         subprocess.run(
                             [
                                 sys.executable,
@@ -2262,20 +1687,12 @@ def auto_healing_monitor():
                             text=True,
                             timeout=300,
                         )
-
                     except Exception as exc:
+                        record_error(bot_id, exc)
 
-                        record_error(
-                            bot_id,
-                            exc,
-                        )
-
-                entry_file = data.get(
-                    "entry_file"
-                )
+                entry_file = data.get("entry_file")
 
                 try:
-
                     result = start_bot_once(
                         bot_id,
                         entry_file,
@@ -2285,7 +1702,6 @@ def auto_healing_monitor():
                     )
 
                     if result["started"]:
-
                         try:
                             bot.send_message(
                                 owner_id,
@@ -2301,23 +1717,11 @@ def auto_healing_monitor():
                             pass
 
                 except Exception as exc:
-
-                    record_error(
-                        bot_id,
-                        exc,
-                    )
+                    record_error(bot_id, exc)
 
             except Exception as exc:
-
-                logger.exception(
-                    "Watchdog error for %s",
-                    bot_id,
-                )
-
-                record_error(
-                    bot_id,
-                    exc,
-                )
+                logger.exception("Watchdog error for %s", bot_id)
+                record_error(bot_id, exc)
 
         status_cache.cleanup()
 
@@ -2327,93 +1731,57 @@ def auto_healing_monitor():
 # ============================================================
 
 def deployment_worker():
-
     while not SHUTDOWN_REQUESTED:
-
         try:
-
-            task = deployment_queue.get(
-                timeout=1
-            )
-
+            task = deployment_queue.get(timeout=1)
         except queue.Empty:
             continue
 
         try:
-
             finalize_deployment(
                 task["chat_id"],
                 task["msg_id"],
                 task["bot_id"],
                 task["install_type"],
-                task.get(
-                    "manual_req_path"
-                ),
+                task.get("manual_req_path"),
             )
-
         except Exception as exc:
-
-            logger.exception(
-                "Deployment worker failed."
-            )
-
+            logger.exception("Deployment worker failed.")
             try:
                 bot.send_message(
                     task["chat_id"],
-                    (
-                        "❌ Deployment worker error:\n"
-                        f"`{safe_text(exc, 1000)}`"
-                    ),
+                    f"❌ Deployment worker error:\n`{safe_text(exc, 1000)}`",
                     parse_mode="Markdown",
                 )
             except Exception:
                 pass
-
         finally:
             deployment_queue.task_done()
 
 
 def start_deployment_workers():
-
-    for index in range(
-        max(1, DEPLOYMENT_WORKERS)
-    ):
-
+    for index in range(max(1, DEPLOYMENT_WORKERS)):
         thread = threading.Thread(
             target=deployment_worker,
             name=f"deploy-worker-{index + 1}",
             daemon=True,
         )
-
         thread.start()
-
-        deployment_workers.append(
-            thread
-        )
+        deployment_workers.append(thread)
 
 
 # ============================================================
 # MTProto DOWNLOAD
 # ============================================================
 
-def mtproto_download(
-    chat_id,
-    message_id,
-    dest_path,
-):
-
+def mtproto_download(chat_id, message_id, dest_path):
     if not MTPROTO_AVAILABLE:
-        raise RuntimeError(
-            "Pyrogram is not installed."
-        )
+        raise RuntimeError("Pyrogram is not installed.")
 
     if not GLOBAL_API_ID or not GLOBAL_API_HASH:
-        raise RuntimeError(
-            "MTProto credentials are not configured."
-        )
+        raise RuntimeError("MTProto credentials are not configured.")
 
     async def run():
-
         async with Client(
             "mtproto_engine",
             api_id=GLOBAL_API_ID,
@@ -2421,31 +1789,14 @@ def mtproto_download(
             bot_token=BOT_TOKEN,
             in_memory=True,
         ) as client:
-
-            message = await client.get_messages(
-                chat_id,
-                message_id,
-            )
-
-            await client.download_media(
-                message,
-                file_name=dest_path,
-            )
+            message = await client.get_messages(chat_id, message_id)
+            await client.download_media(message, file_name=dest_path)
 
     loop = asyncio.new_event_loop()
-
     try:
-
-        asyncio.set_event_loop(
-            loop
-        )
-
-        loop.run_until_complete(
-            run()
-        )
-
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run())
     finally:
-
         loop.close()
 
 
@@ -2453,24 +1804,14 @@ def mtproto_download(
 # MTProto UPLOAD
 # ============================================================
 
-def mtproto_upload(
-    chat_id,
-    file_path,
-    caption,
-):
-
+def mtproto_upload(chat_id, file_path, caption):
     if not MTPROTO_AVAILABLE:
-        raise RuntimeError(
-            "Pyrogram is not installed."
-        )
+        raise RuntimeError("Pyrogram is not installed.")
 
     if not GLOBAL_API_ID or not GLOBAL_API_HASH:
-        raise RuntimeError(
-            "MTProto credentials are not configured."
-        )
+        raise RuntimeError("MTProto credentials are not configured.")
 
     async def run():
-
         async with Client(
             "mtproto_engine",
             api_id=GLOBAL_API_ID,
@@ -2478,7 +1819,6 @@ def mtproto_upload(
             bot_token=BOT_TOKEN,
             in_memory=True,
         ) as client:
-
             await client.send_document(
                 chat_id,
                 document=file_path,
@@ -2486,19 +1826,10 @@ def mtproto_upload(
             )
 
     loop = asyncio.new_event_loop()
-
     try:
-
-        asyncio.set_event_loop(
-            loop
-        )
-
-        loop.run_until_complete(
-            run()
-        )
-
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run())
     finally:
-
         loop.close()
 
 
@@ -2506,289 +1837,107 @@ def mtproto_upload(
 # BOT MENUS
 # ============================================================
 
-def get_user_menu(
-    user_id
-):
-
-    markup = InlineKeyboardMarkup(
-        row_width=2
-    )
+def get_user_menu(user_id):
+    markup = InlineKeyboardMarkup(row_width=2)
 
     active_bots = [
         bot_id
-        for bot_id, data
-        in hosted_processes.items()
+        for bot_id, data in hosted_processes.items()
         if (
             is_admin(user_id)
-            or int(
-                data.get(
-                    "owner_id",
-                    -1,
-                )
-            )
-            == int(user_id)
+            or int(data.get("owner_id", -1)) == int(user_id)
         )
-        and is_bot_running(
-            bot_id
-        )
+        and is_bot_running(bot_id)
     ]
 
     markup.add(
-
-        InlineKeyboardButton(
-            "🚀 Deploy New Bot",
-            callback_data="host_file",
-        ),
-
-        InlineKeyboardButton(
-            "🤖 My Bots",
-            callback_data="my_bots",
-        ),
-
-        InlineKeyboardButton(
-            f"🟢 Running ({len(active_bots)})",
-            callback_data="my_bots",
-        ),
-
-        InlineKeyboardButton(
-            "🔍 ID Search Hub",
-            callback_data="search_hub",
-        ),
-
-        InlineKeyboardButton(
-            "🔑 ENV / Token Manager",
-            callback_data="manage_env",
-        ),
-
-        InlineKeyboardButton(
-            "📊 Server Health",
-            callback_data="server_ping",
-        ),
-
-        InlineKeyboardButton(
-            "📦 Storage & Backup",
-            callback_data="browse_files",
-        ),
-
-        InlineKeyboardButton(
-            "🛑 Stop My Bots",
-            callback_data="stop_my_bots",
-        ),
+        InlineKeyboardButton("🚀 Deploy New Bot", callback_data="host_file"),
+        InlineKeyboardButton("🤖 My Bots", callback_data="my_bots"),
+        InlineKeyboardButton(f"🟢 Running ({len(active_bots)})", callback_data="my_bots"),
+        InlineKeyboardButton("🔍 ID Search Hub", callback_data="search_hub"),
+        InlineKeyboardButton("🔑 ENV / Token Manager", callback_data="manage_env"),
+        InlineKeyboardButton("📊 Server Health", callback_data="server_ping"),
+        InlineKeyboardButton("📦 Storage & Backup", callback_data="browse_files"),
+        InlineKeyboardButton("🛑 Stop My Bots", callback_data="stop_my_bots"),
+        InlineKeyboardButton("🧩 Extension Pack & Modes", callback_data="x_features"),
     )
 
     if is_admin(user_id):
-
         markup.add(
-            InlineKeyboardButton(
-                "👑 Master Admin Panel",
-                callback_data="admin_panel",
-            )
+            InlineKeyboardButton("👑 Master Admin Panel", callback_data="admin_panel")
         )
 
     return markup
 
 
 def get_search_hub_menu():
-
-    markup = InlineKeyboardMarkup(
-        row_width=1
-    )
-
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
-        InlineKeyboardButton(
-            "🔍 Find Bot by ID",
-            callback_data="search_by_id",
-        ),
-        InlineKeyboardButton(
-            "➕ Deploy New Bot",
-            callback_data="host_file",
-        ),
-        InlineKeyboardButton(
-            "🔙 Dashboard",
-            callback_data="main_menu",
-        ),
+        InlineKeyboardButton("🔍 Find Bot by ID", callback_data="search_by_id"),
+        InlineKeyboardButton("➕ Deploy New Bot", callback_data="host_file"),
+        InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"),
     )
-
     return markup
 
 
-def get_package_menu(
-    bot_id
-):
-
-    markup = InlineKeyboardMarkup(
-        row_width=2
-    )
-
+def get_package_menu(bot_id):
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton(
-            "🧠 Smart Auto-Install",
-            callback_data=f"pkg_auto:{bot_id}",
-        ),
-        InlineKeyboardButton(
-            "📝 Manual Requirements",
-            callback_data=f"pkg_manual:{bot_id}",
-        ),
-        InlineKeyboardButton(
-            "❌ Cancel",
-            callback_data="main_menu",
-        ),
+        InlineKeyboardButton("🧠 Smart Auto-Install", callback_data=f"pkg_auto:{bot_id}"),
+        InlineKeyboardButton("📝 Manual Requirements", callback_data=f"pkg_manual:{bot_id}"),
+        InlineKeyboardButton("❌ Cancel", callback_data="main_menu"),
     )
-
     return markup
 
 
 def get_admin_menu():
+    status = "🟢 ON" if MAINTENANCE_MODE else "🔴 OFF"
 
-    status = (
-        "🟢 ON"
-        if MAINTENANCE_MODE
-        else "🔴 OFF"
-    )
-
-    markup = InlineKeyboardMarkup(
-        row_width=2
-    )
-
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-
-        InlineKeyboardButton(
-            "📊 Global Health",
-            callback_data="server_ping",
-        ),
-
-        InlineKeyboardButton(
-            "🌐 All Bots",
-            callback_data="list_all_bots",
-        ),
-
-        InlineKeyboardButton(
-            f"🛠 Maintenance: {status}",
-            callback_data="toggle_maintenance",
-        ),
-
-        InlineKeyboardButton(
-            "🚨 Emergency Stop",
-            callback_data="emergency_kill",
-        ),
-
-        InlineKeyboardButton(
-            "🧹 Deep Clean",
-            callback_data="server_clean",
-        ),
-
-        InlineKeyboardButton(
-            "📢 Broadcast",
-            callback_data="broadcast_menu",
-        ),
-
-        InlineKeyboardButton(
-            "📦 Full Backup",
-            callback_data="export_zip",
-        ),
-
-        InlineKeyboardButton(
-            "🔙 Dashboard",
-            callback_data="main_menu",
-        ),
+        InlineKeyboardButton("📊 Global Health", callback_data="server_ping"),
+        InlineKeyboardButton("🌐 All Bots", callback_data="list_all_bots"),
+        InlineKeyboardButton(f"🛠 Maintenance: {status}", callback_data="toggle_maintenance"),
+        InlineKeyboardButton("🚨 Emergency Stop", callback_data="emergency_kill"),
+        InlineKeyboardButton("🧹 Deep Clean", callback_data="server_clean"),
+        InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_menu"),
+        InlineKeyboardButton("📦 Full Backup", callback_data="export_zip"),
+        InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"),
     )
-
     return markup
 
 
-def get_control_panel(
-    bot_id,
-    running=None,
-):
-
-    data = hosted_processes.get(
-        bot_id
-    )
-
+def get_control_panel(bot_id, running=None):
+    data = hosted_processes.get(bot_id)
     if data is None:
-
-        return InlineKeyboardMarkup(
-            row_width=2
-        )
+        return InlineKeyboardMarkup(row_width=2)
 
     if running is None:
-        running = is_bot_running(
-            bot_id
-        )
+        running = is_bot_running(bot_id)
 
-    markup = InlineKeyboardMarkup(
-        row_width=2
-    )
+    markup = InlineKeyboardMarkup(row_width=2)
 
     if running:
-
         markup.add(
-            InlineKeyboardButton(
-                "🛑 Stop",
-                callback_data=f"stop:{bot_id}",
-            ),
-            InlineKeyboardButton(
-                "🔄 Restart",
-                callback_data=f"restart_confirm:{bot_id}",
-            ),
+            InlineKeyboardButton("🛑 Stop", callback_data=f"stop:{bot_id}"),
+            InlineKeyboardButton("🔄 Restart", callback_data=f"restart_confirm:{bot_id}"),
         )
-
     else:
-
         markup.add(
-            InlineKeyboardButton(
-                "▶️ Start",
-                callback_data=f"start:{bot_id}",
-            ),
-            InlineKeyboardButton(
-                "🔄 Start Check",
-                callback_data=f"start:{bot_id}",
-            ),
+            InlineKeyboardButton("▶️ Start", callback_data=f"start:{bot_id}"),
+            InlineKeyboardButton("🔄 Start Check", callback_data=f"start:{bot_id}"),
         )
 
     markup.add(
-
-        InlineKeyboardButton(
-            "📊 Health",
-            callback_data=f"health:{bot_id}",
-        ),
-
-        InlineKeyboardButton(
-            "📜 Logs",
-            callback_data=f"log:{bot_id}",
-        ),
-
-        InlineKeyboardButton(
-            "📝 Update Code",
-            callback_data=f"edit_code:{bot_id}",
-        ),
-
-        InlineKeyboardButton(
-            "🔐 ENV / Token",
-            callback_data=f"bot_env:{bot_id}",
-        ),
-
-        InlineKeyboardButton(
-            "🕘 Versions",
-            callback_data=f"versions:{bot_id}",
-        ),
-
-        InlineKeyboardButton(
-            "↩️ Rollback",
-            callback_data=f"rollback_menu:{bot_id}",
-        ),
-
-        InlineKeyboardButton(
-            "🗑️ Delete",
-            callback_data=f"del:{bot_id}",
-        ),
-
-        InlineKeyboardButton(
-            "🔙 Dashboard",
-            callback_data="main_menu",
-        ),
+        InlineKeyboardButton("📊 Health", callback_data=f"health:{bot_id}"),
+        InlineKeyboardButton("📜 Logs", callback_data=f"log:{bot_id}"),
+        InlineKeyboardButton("📝 Update Code", callback_data=f"edit_code:{bot_id}"),
+        InlineKeyboardButton("🔐 ENV / Token", callback_data=f"bot_env:{bot_id}"),
+        InlineKeyboardButton("🕘 Versions", callback_data=f"versions:{bot_id}"),
+        InlineKeyboardButton("↩️ Rollback", callback_data=f"rollback_menu:{bot_id}"),
+        InlineKeyboardButton("🗑️ Delete", callback_data=f"del:{bot_id}"),
+        InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"),
     )
-
     return markup
 
 
@@ -2796,26 +1945,11 @@ def get_control_panel(
 # STATUS BAR
 # ============================================================
 
-def build_bot_status_bar(
-    bot_id
-):
-
-    status = get_bot_status(
-        bot_id
-    )
-
-    health = inspect_bot_health(
-        bot_id
-    )
-
-    metrics = ensure_metrics(
-        bot_id
-    )
-
-    memory = health.get(
-        "memory",
-        0,
-    )
+def build_bot_status_bar(bot_id):
+    status = get_bot_status(bot_id)
+    health = inspect_bot_health(bot_id)
+    metrics = ensure_metrics(bot_id)
+    memory = health.get("memory", 0)
 
     return (
         f"🤖 **{bot_id} STATUS BAR**\n\n"
@@ -2839,53 +1973,33 @@ def build_bot_status_bar(
 # START COMMAND
 # ============================================================
 
-@bot.message_handler(
-    commands=["start"]
-)
+@bot.message_handler(commands=["start"])
 def start_cmd(message):
-
     user_id = message.from_user.id
 
     if is_banned(user_id):
         return
 
-    user_chats.add(
-        message.chat.id
-    )
-
+    user_chats.add(message.chat.id)
     save_registry()
 
-    if (
-        MAINTENANCE_MODE
-        and not is_admin(user_id)
-    ):
-
+    if MAINTENANCE_MODE and not is_admin(user_id):
         bot.send_message(
             message.chat.id,
-            (
-                "🛠 **SERVER UNDER MAINTENANCE**\n\n"
-                "Please try again later."
-            ),
+            "🛠 **SERVER UNDER MAINTENANCE**\n\nPlease try again later.",
             parse_mode="Markdown",
         )
-
         return
 
-    mtproto_status = (
-        "🟢 ACTIVE"
-        if MTPROTO_AVAILABLE
-        else "🔴 OFFLINE"
-    )
+    mtproto_status = "🟢 ACTIVE" if MTPROTO_AVAILABLE else "🔴 OFFLINE"
 
     dashboard = (
         "⚡ **XX SUPERCHARGED HOSTING ENGINE** ⚡\n\n"
         f"🆔 **Your ID:** `{user_id}`\n"
-        f"🔰 **Access:** "
-        f"`{'MASTER ADMIN' if is_admin(user_id) else 'STANDARD'}`\n\n"
+        f"🔰 **Access:** `{'MASTER ADMIN' if is_admin(user_id) else 'STANDARD'}`\n\n"
         f"🚀 **MTProto:** `{mtproto_status}`\n"
         f"🤖 **Hosted Bots:** `{len(hosted_processes)}`\n"
-        f"🟢 **Running:** `"
-        f"{sum(is_bot_running(x) for x in hosted_processes)}`\n\n"
+        f"🟢 **Running:** `{sum(is_bot_running(x) for x in hosted_processes)}`\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "🛡 Duplicate protection: `ACTIVE`\n"
         "🩺 Health watchdog: `ACTIVE`\n"
@@ -2899,9 +2013,7 @@ def start_cmd(message):
         message.chat.id,
         dashboard,
         parse_mode="Markdown",
-        reply_markup=get_user_menu(
-            user_id
-        ),
+        reply_markup=get_user_menu(user_id),
     )
 
 
@@ -2909,45 +2021,32 @@ def start_cmd(message):
 # CALLBACK ROUTER
 # ============================================================
 
-@bot.callback_query_handler(
-    func=lambda call: True
-)
+@bot.callback_query_handler(func=lambda call: not (call.data or "").startswith("x_"))
 def handle_callbacks(call):
-
     global MAINTENANCE_MODE
 
     uid = call.from_user.id
     chat = call.message.chat.id
     data = call.data
 
-    user_chats.add(
-        chat
-    )
+    user_chats.add(chat)
 
     try:
-        bot.answer_callback_query(
-            call.id
-        )
+        bot.answer_callback_query(call.id)
     except Exception:
         pass
 
     if data == "main_menu":
-
         bot.edit_message_text(
-            "🎛️ **XX Root Dashboard**\n\n"
-            "Choose an operation:",
+            "🎛️ **XX Root Dashboard**\n\nChoose an operation:",
             chat,
             call.message.message_id,
             parse_mode="Markdown",
-            reply_markup=get_user_menu(
-                uid
-            ),
+            reply_markup=get_user_menu(uid),
         )
-
         return
 
     if data == "admin_panel":
-
         if not is_admin(uid):
             return
 
@@ -2958,11 +2057,9 @@ def handle_callbacks(call):
             parse_mode="Markdown",
             reply_markup=get_admin_menu(),
         )
-
         return
 
     if data == "search_hub":
-
         bot.edit_message_text(
             "🔍 **Identity Search Hub**",
             chat,
@@ -2970,22 +2067,15 @@ def handle_callbacks(call):
             parse_mode="Markdown",
             reply_markup=get_search_hub_menu(),
         )
-
         return
 
     if data == "host_file":
-
-        if (
-            MAINTENANCE_MODE
-            and not is_admin(uid)
-        ):
-
+        if MAINTENANCE_MODE and not is_admin(uid):
             bot.answer_callback_query(
                 call.id,
                 "Maintenance is active.",
                 show_alert=True,
             )
-
             return
 
         bot.send_message(
@@ -3006,36 +2096,22 @@ def handle_callbacks(call):
             call.message,
             process_script_upload,
         )
-
         return
 
     if data == "search_by_id":
-
         bot.send_message(
             chat,
-            (
-                "🔍 Enter Bot ID.\n"
-                "Example: `BOT-1234`"
-            ),
+            "🔍 Enter Bot ID.\nExample: `BOT-1234`",
             parse_mode="Markdown",
         )
-
         bot.register_next_step_handler(
             call.message,
             process_search_bot,
         )
-
         return
 
-    if data.startswith(
-        "pkg_auto:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
+    if data.startswith("pkg_auto:"):
+        bot_id = data.split(":", 1)[1]
         deployment_queue.put(
             {
                 "chat_id": chat,
@@ -3044,27 +2120,15 @@ def handle_callbacks(call):
                 "install_type": "auto",
             }
         )
-
         bot.send_message(
             chat,
-            (
-                f"📥 `{bot_id}` added to "
-                "deployment queue."
-            ),
+            f"📥 `{bot_id}` added to deployment queue.",
             parse_mode="Markdown",
         )
-
         return
 
-    if data.startswith(
-        "pkg_manual:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
+    if data.startswith("pkg_manual:"):
+        bot_id = data.split(":", 1)[1]
         bot.edit_message_text(
             (
                 "📝 **Manual Dependency Mode**\n\n"
@@ -3075,26 +2139,17 @@ def handle_callbacks(call):
             call.message.message_id,
             parse_mode="Markdown",
         )
-
         bot.register_next_step_handler(
             call.message,
-            lambda m: handle_manual_reqs(
-                m,
-                bot_id,
-            ),
+            lambda m: handle_manual_reqs(m, bot_id),
         )
-
         return
 
     if data == "toggle_maintenance":
-
         if not is_admin(uid):
             return
 
-        MAINTENANCE_MODE = (
-            not MAINTENANCE_MODE
-        )
-
+        MAINTENANCE_MODE = not MAINTENANCE_MODE
         save_registry()
 
         bot.edit_message_reply_markup(
@@ -3102,37 +2157,19 @@ def handle_callbacks(call):
             call.message.message_id,
             reply_markup=get_admin_menu(),
         )
-
         return
 
     if data == "server_ping":
-
         if psutil:
-
-            cpu = psutil.cpu_percent(
-                interval=0.3
-            )
-
+            cpu = psutil.cpu_percent(interval=0.3)
             ram = psutil.virtual_memory()
-
             ram_percent = ram.percent
-
         else:
-
             cpu = 0
             ram_percent = 0
 
-        total_disk, used_disk, free_disk = (
-            shutil.disk_usage("/")
-        )
-
-        running = sum(
-            is_bot_running(
-                bot_id
-            )
-            for bot_id
-            in hosted_processes
-        )
+        total_disk, used_disk, free_disk = shutil.disk_usage("/")
+        running = sum(is_bot_running(bot_id) for bot_id in hosted_processes)
 
         health_text = (
             "📊 **ADVANCED ENGINE HEALTH**\n\n"
@@ -3164,84 +2201,44 @@ def handle_callbacks(call):
                 )
             ),
         )
-
         return
 
     if data == "manage_env":
-
-        envs = user_custom_envs.get(
-            str(uid),
-            {},
-        )
-
+        envs = user_custom_envs.get(str(uid), {})
         if envs:
-
-            names = "\n".join(
-                f"🔹 `{key}` → `********`"
-                for key in envs
-            )
-
+            names = "\n".join(f"🔹 `{key}` → `********`" for key in envs)
         else:
-
-            names = (
-                "🔹 No custom variables."
-            )
+            names = "🔹 No custom variables."
 
         bot.send_message(
             chat,
             (
                 "🔐 **ENVIRONMENT MANAGER**\n\n"
                 f"{names}\n\n"
-                "Send `KEY=VALUE` to add/update "
-                "a variable.\n\n"
+                "Send `KEY=VALUE` to add/update a variable.\n\n"
                 "Type `cancel` to exit."
             ),
             parse_mode="Markdown",
         )
-
         bot.register_next_step_handler(
             call.message,
             save_env_var,
         )
-
         return
 
-    if data.startswith(
-        "bot_env:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        data_record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("bot_env:"):
+        bot_id = data.split(":", 1)[1]
+        data_record = hosted_processes.get(bot_id)
         if not data_record:
             return
 
-        owner_id = data_record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = data_record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
-        envs = user_custom_envs.get(
-            str(owner_id),
-            {},
-        )
-
+        envs = user_custom_envs.get(str(owner_id), {})
         names = (
-            "\n".join(
-                f"🔹 `{k}` → `********`"
-                for k in envs
-            )
+            "\n".join(f"🔹 `{k}` → `********`" for k in envs)
             if envs
             else "No custom variables."
         )
@@ -3255,266 +2252,125 @@ def handle_callbacks(call):
             ),
             parse_mode="Markdown",
         )
-
         return
 
     if data == "server_clean":
-
         if not is_admin(uid):
             return
 
-        shutil.rmtree(
-            TEMP_DIR,
-            ignore_errors=True,
-        )
+        shutil.rmtree(TEMP_DIR, ignore_errors=True)
+        os.makedirs(TEMP_DIR, exist_ok=True)
 
-        os.makedirs(
-            TEMP_DIR,
-            exist_ok=True,
-        )
-
-        for root, _, files in os.walk(
-            LOG_DIR
-        ):
-
+        for root, _, files in os.walk(LOG_DIR):
             for filename in files:
-
-                path = os.path.join(
-                    root,
-                    filename,
-                )
-
+                path = os.path.join(root, filename)
                 try:
-
-                    if (
-                        os.path.getsize(path)
-                        > MAX_LOG_BYTES
-                    ):
-
-                        rotate_log_if_needed(
-                            filename.replace(
-                                ".log",
-                                "",
-                            )
-                        )
-
+                    if os.path.getsize(path) > MAX_LOG_BYTES:
+                        rotate_log_if_needed(filename.replace(".log", ""))
                 except Exception:
                     continue
 
         status_cache.clear()
-
         bot.send_message(
             chat,
             "🧹 **Deep system cleanup completed.**",
             parse_mode="Markdown",
         )
-
         return
 
     if data == "browse_files":
-
-        markup = InlineKeyboardMarkup(
-            row_width=1
-        )
-
+        markup = InlineKeyboardMarkup(row_width=1)
         markup.add(
-            InlineKeyboardButton(
-                "📦 Export Full Archive",
-                callback_data="export_zip",
-            ),
-            InlineKeyboardButton(
-                "🔙 Dashboard",
-                callback_data="main_menu",
-            ),
+            InlineKeyboardButton("📦 Export Full Archive", callback_data="export_zip"),
+            InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"),
         )
-
         bot.send_message(
             chat,
             "📂 **Storage & Backup Center**",
             parse_mode="Markdown",
             reply_markup=markup,
         )
-
         return
 
     if data == "export_zip":
-
         if not is_admin(uid):
-
-            bot.send_message(
-                chat,
-                "❌ Backup export is restricted to admin.",
-            )
-
+            bot.send_message(chat, "❌ Backup export is restricted to admin.")
             return
 
-        zip_path = os.path.join(
-            TEMP_DIR,
-            f"backup_{uid}.zip",
-        )
+        zip_path = os.path.join(TEMP_DIR, f"backup_{uid}.zip")
 
         try:
-
             with zipfile.ZipFile(
                 zip_path,
                 "w",
                 compression=zipfile.ZIP_DEFLATED,
             ) as archive:
-
-                for root, _, files in os.walk(
-                    HOST_DIR
-                ):
-
+                for root, _, files in os.walk(HOST_DIR):
                     for filename in files:
-
-                        source = os.path.join(
-                            root,
-                            filename,
-                        )
-
+                        source = os.path.join(root, filename)
                         archive.write(
                             source,
-                            arcname=os.path.relpath(
-                                source,
-                                HOST_DIR,
-                            ),
+                            arcname=os.path.relpath(source, HOST_DIR),
                         )
 
-            size = os.path.getsize(
-                zip_path
-            )
+            size = os.path.getsize(zip_path)
 
-            if (
-                size > 49 * 1024 * 1024
-                and MTPROTO_AVAILABLE
-            ):
-
+            if size > 49 * 1024 * 1024 and MTPROTO_AVAILABLE:
                 bot.send_message(
                     chat,
-                    (
-                        f"📦 Archive: `{get_readable_size(size)}`\n"
-                        "🚀 Sending through MTProto."
-                    ),
+                    f"📦 Archive: `{get_readable_size(size)}`\n🚀 Sending through MTProto.",
                     parse_mode="Markdown",
                 )
-
                 threading.Thread(
                     target=mtproto_upload,
-                    args=(
-                        chat,
-                        zip_path,
-                        "📦 XX Engine Backup",
-                    ),
+                    args=(chat, zip_path, "📦 XX Engine Backup"),
                     daemon=True,
                 ).start()
-
             else:
-
-                with open(
-                    zip_path,
-                    "rb",
-                ) as document:
-
-                    bot.send_document(
-                        chat,
-                        document,
-                    )
-
-                os.remove(
-                    zip_path
-                )
+                with open(zip_path, "rb") as document:
+                    bot.send_document(chat, document)
+                os.remove(zip_path)
 
         except Exception as exc:
-
             bot.send_message(
                 chat,
                 f"❌ Backup failed: `{safe_text(exc)}`",
                 parse_mode="Markdown",
             )
-
         return
 
-    if data in (
-        "my_bots",
-        "list_all_bots",
-    ):
-
-        if (
-            data == "list_all_bots"
-            and not is_admin(uid)
-        ):
+    if data in ("my_bots", "list_all_bots"):
+        if data == "list_all_bots" and not is_admin(uid):
             return
 
         items = []
-
-        for bot_id, record in (
-            hosted_processes.items()
-        ):
-
-            owner_id = record.get(
-                "owner_id"
-            )
-
-            if (
-                is_admin(uid)
-                or int(owner_id) == int(uid)
-            ):
-
-                items.append(
-                    (
-                        bot_id,
-                        record,
-                    )
-                )
+        for bot_id, record in hosted_processes.items():
+            owner_id = record.get("owner_id")
+            if is_admin(uid) or int(owner_id) == int(uid):
+                items.append((bot_id, record))
 
         if not items:
-
             bot.send_message(
                 chat,
                 "📂 No bots found.",
-                reply_markup=get_user_menu(
-                    uid
-                ),
+                reply_markup=get_user_menu(uid),
             )
-
             return
 
-        markup = InlineKeyboardMarkup(
-            row_width=1
-        )
-
+        markup = InlineKeyboardMarkup(row_width=1)
         for bot_id, record in items:
-
-            running = is_bot_running(
-                bot_id
-            )
-
-            status = (
-                "🟢"
-                if running
-                else "🔴"
-            )
-
+            running = is_bot_running(bot_id)
+            status = "🟢" if running else "🔴"
             markup.add(
                 InlineKeyboardButton(
-                    (
-                        f"{status} "
-                        f"{bot_id} "
-                        f"({os.path.basename(record['entry_file'])})"
-                    ),
+                    f"{status} {bot_id} ({os.path.basename(record['entry_file'])})",
                     callback_data=f"manage:{bot_id}",
                 )
             )
 
         markup.add(
-            InlineKeyboardButton(
-                "➕ Deploy New Bot",
-                callback_data="host_file",
-            ),
-            InlineKeyboardButton(
-                "🔙 Dashboard",
-                callback_data="main_menu",
-            ),
+            InlineKeyboardButton("➕ Deploy New Bot", callback_data="host_file"),
+            InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"),
         )
 
         bot.send_message(
@@ -3523,91 +2379,45 @@ def handle_callbacks(call):
             parse_mode="Markdown",
             reply_markup=markup,
         )
-
         return
 
-    if data.startswith(
-        "manage:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("manage:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
-            bot.answer_callback_query(
-                call.id,
-                "Bot not found.",
-                show_alert=True,
-            )
+            bot.answer_callback_query(call.id, "Bot not found.", show_alert=True)
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
-        text = build_bot_status_bar(
-            bot_id
-        )
-
+        text = build_bot_status_bar(bot_id)
         bot.send_message(
             chat,
             text,
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id
-            ),
+            reply_markup=get_control_panel(bot_id),
         )
-
         return
 
-    if data.startswith(
-        "health:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("health:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
-        health = inspect_bot_health(
-            bot_id
-        )
-
+        health_data = inspect_bot_health(bot_id)
         text = (
             f"🩺 **{bot_id} HEALTH PANEL**\n\n"
-            f"Status: `{health['status']}`\n"
-            f"PID: `{health.get('pid') or '-'}`\n"
-            f"CPU: `{round(health.get('cpu', 0), 1)}%`\n"
-            f"RAM: `{get_readable_size(health.get('memory', 0))}`\n\n"
+            f"Status: `{health_data['status']}`\n"
+            f"PID: `{health_data.get('pid') or '-'}`\n"
+            f"CPU: `{round(health_data.get('cpu', 0), 1)}%`\n"
+            f"RAM: `{get_readable_size(health_data.get('memory', 0))}`\n\n"
             f"{build_bot_status_bar(bot_id)}"
         )
 
@@ -3615,52 +2425,24 @@ def handle_callbacks(call):
             chat,
             text,
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id
-            ),
+            reply_markup=get_control_panel(bot_id),
         )
-
         return
 
-    if data.startswith(
-        "restart_confirm:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("restart_confirm:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
-        markup = InlineKeyboardMarkup(
-            row_width=2
-        )
-
+        markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton(
-                "✅ Confirm Restart",
-                callback_data=f"restart:{bot_id}",
-            ),
-            InlineKeyboardButton(
-                "❌ Cancel",
-                callback_data=f"manage:{bot_id}",
-            ),
+            InlineKeyboardButton("✅ Confirm Restart", callback_data=f"restart:{bot_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"manage:{bot_id}"),
         )
 
         bot.send_message(
@@ -3673,33 +2455,16 @@ def handle_callbacks(call):
             parse_mode="Markdown",
             reply_markup=markup,
         )
-
         return
 
-    if data.startswith(
-        "start:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("start:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
         result = start_bot_once(
@@ -3714,37 +2479,18 @@ def handle_callbacks(call):
             chat,
             result["message"],
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id
-            ),
+            reply_markup=get_control_panel(bot_id),
         )
-
         return
 
-    if data.startswith(
-        "restart:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("restart:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
         result = restart_bot(
@@ -3757,37 +2503,18 @@ def handle_callbacks(call):
             chat,
             result["message"],
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id
-            ),
+            reply_markup=get_control_panel(bot_id),
         )
-
         return
 
-    if data.startswith(
-        "stop:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("stop:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
         stop_script_process(
@@ -3799,105 +2526,50 @@ def handle_callbacks(call):
             chat,
             (
                 f"🛑 `{bot_id}` stopped.\n\n"
-                "No automatic restart will occur "
-                "until you explicitly start it."
+                "No automatic restart will occur until you explicitly start it."
             ),
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id,
-                running=False,
-            ),
+            reply_markup=get_control_panel(bot_id, running=False),
         )
-
         return
 
-    if data.startswith(
-        "log:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("log:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
-        path = record.get(
-            "log_file"
-        )
+        path = record.get("log_file")
+        content = "No logs yet."
 
-        content = (
-            "No logs yet."
-        )
-
-        if path and os.path.exists(
-            path
-        ):
-
-            with open(
-                path,
-                "r",
-                encoding="utf-8",
-                errors="ignore",
-            ) as handle:
-
-                content = handle.read()[
-                    -30000:
-                ]
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                content = handle.read()[-30000:]
 
         bot.send_message(
             chat,
             f"📜 **{bot_id} LIVE LOGS**",
             parse_mode="Markdown",
         )
-
         send_long_message(
             chat,
             content,
             is_code=True,
         )
-
         return
 
-    if data.startswith(
-        "edit_code:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
-
+    if data.startswith("edit_code:"):
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
         bot.send_message(
@@ -3910,74 +2582,33 @@ def handle_callbacks(call):
             ),
             parse_mode="Markdown",
         )
-
         bot.register_next_step_handler(
             call.message,
-            lambda m: save_edited_code(
-                m,
-                bot_id,
-            ),
+            lambda m: save_edited_code(m, bot_id),
         )
-
         return
 
-    if data.startswith(
-        "versions:"
-    ):
-
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        versions = bot_versions.get(
-            bot_id,
-            [],
-        )
+    if data.startswith("versions:"):
+        bot_id = data.split(":", 1)[1]
+        versions = bot_versions.get(bot_id, [])
 
         if not versions:
-
-            bot.send_message(
-                chat,
-                "🕘 No versions stored.",
-            )
-
+            bot.send_message(chat, "🕘 No versions stored.")
             return
 
-        markup = InlineKeyboardMarkup(
-            row_width=1
-        )
-
-        for item in reversed(
-            versions[-10:]
-        ):
-
-            version = item.get(
-                "version",
-                "unknown",
-            )
-
-            reason = item.get(
-                "reason",
-                "update",
-            )
-
+        markup = InlineKeyboardMarkup(row_width=1)
+        for item in reversed(versions[-10:]):
+            version = item.get("version", "unknown")
+            reason = item.get("reason", "update")
             markup.add(
                 InlineKeyboardButton(
                     f"🕘 {version} · {reason}",
-                    callback_data=(
-                        f"rollback_select:"
-                        f"{bot_id}:"
-                        f"{version}"
-                    ),
+                    callback_data=f"rollback_select:{bot_id}:{version}",
                 )
             )
 
         markup.add(
-            InlineKeyboardButton(
-                "🔙 Back",
-                callback_data=f"manage:{bot_id}",
-            )
+            InlineKeyboardButton("🔙 Back", callback_data=f"manage:{bot_id}")
         )
 
         bot.send_message(
@@ -3986,34 +2617,21 @@ def handle_callbacks(call):
             parse_mode="Markdown",
             reply_markup=markup,
         )
-
         return
 
-    if data.startswith(
-        "rollback_select:"
-    ):
-
-        parts = data.split(
-            ":",
-            2,
-        )
-
+    if data.startswith("rollback_select:"):
+        parts = data.split(":", 2)
         if len(parts) != 3:
             return
 
         bot_id = parts[1]
         version = parts[2]
 
-        markup = InlineKeyboardMarkup(
-            row_width=2
-        )
-
+        markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton(
                 "✅ Confirm Rollback",
-                callback_data=(
-                    f"rollback:{bot_id}:{version}"
-                ),
+                callback_data=f"rollback:{bot_id}:{version}",
             ),
             InlineKeyboardButton(
                 "❌ Cancel",
@@ -4023,46 +2641,26 @@ def handle_callbacks(call):
 
         bot.send_message(
             chat,
-            (
-                f"⚠️ Roll back `{bot_id}` to\n"
-                f"`{version}`?"
-            ),
+            f"⚠️ Roll back `{bot_id}` to `{version}`?",
             parse_mode="Markdown",
             reply_markup=markup,
         )
-
         return
 
-    if data.startswith(
-        "rollback:"
-    ):
-
-        parts = data.split(
-            ":",
-            2,
-        )
-
+    if data.startswith("rollback:"):
+        parts = data.split(":", 2)
         if len(parts) != 3:
             return
 
         bot_id = parts[1]
         version = parts[2]
 
-        record = hosted_processes.get(
-            bot_id
-        )
-
+        record = hosted_processes.get(bot_id)
         if not record:
             return
 
-        owner_id = record.get(
-            "owner_id"
-        )
-
-        if (
-            not is_admin(uid)
-            and int(owner_id) != int(uid)
-        ):
+        owner_id = record.get("owner_id")
+        if not is_admin(uid) and int(owner_id) != int(uid):
             return
 
         ok, message = rollback_bot(
@@ -4073,35 +2671,18 @@ def handle_callbacks(call):
 
         bot.send_message(
             chat,
-            (
-                "✅ "
-                if ok
-                else "❌ "
-            )
-            + message,
+            ("✅ " if ok else "❌ ") + message,
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id
-            ),
+            reply_markup=get_control_panel(bot_id),
         )
-
         return
 
-    if data.startswith(
-        "del:"
-    ):
-
+    if data.startswith("del:"):
         if not is_admin(uid):
             return
 
-        bot_id = data.split(
-            ":",
-            1,
-        )[1]
-
-        record = hosted_processes.get(
-            bot_id
-        )
+        bot_id = data.split(":", 1)[1]
+        record = hosted_processes.get(bot_id)
 
         if record:
             stop_script_process(
@@ -4110,32 +2691,14 @@ def handle_callbacks(call):
             )
 
         shutil.rmtree(
-            os.path.join(
-                HOST_DIR,
-                bot_id,
-            ),
+            os.path.join(HOST_DIR, bot_id),
             ignore_errors=True,
         )
 
-        hosted_processes.pop(
-            bot_id,
-            None,
-        )
-
-        bot_metadata.pop(
-            bot_id,
-            None,
-        )
-
-        bot_versions.pop(
-            bot_id,
-            None,
-        )
-
-        bot_metrics.pop(
-            bot_id,
-            None,
-        )
+        hosted_processes.pop(bot_id, None)
+        bot_metadata.pop(bot_id, None)
+        bot_versions.pop(bot_id, None)
+        bot_metrics.pop(bot_id, None)
 
         save_registry()
 
@@ -4144,56 +2707,34 @@ def handle_callbacks(call):
             f"🗑️ `{bot_id}` deleted.",
             parse_mode="Markdown",
         )
-
         return
 
     if data == "stop_my_bots":
-
         count = 0
-
-        for bot_id, record in list(
-            hosted_processes.items()
-        ):
-
-            if int(
-                record.get(
-                    "owner_id",
-                    -1,
-                )
-            ) == int(uid):
-
-                if is_bot_running(
-                    bot_id
-                ):
-
+        for bot_id, record in list(hosted_processes.items()):
+            if int(record.get("owner_id", -1)) == int(uid):
+                if is_bot_running(bot_id):
                     stop_script_process(
                         bot_id,
                         reason="user_stop_all",
                     )
-
                     count += 1
 
         bot.send_message(
             chat,
             (
                 f"🛑 Stopped `{count}` bot(s).\n"
-                "Automatic recovery is disabled for "
-                "manually stopped bots."
+                "Automatic recovery is disabled for manually stopped bots."
             ),
             parse_mode="Markdown",
         )
-
         return
 
     if data == "emergency_kill":
-
         if not is_admin(uid):
             return
 
-        for bot_id in list(
-            hosted_processes.keys()
-        ):
-
+        for bot_id in list(hosted_processes.keys()):
             stop_script_process(
                 bot_id,
                 reason="admin_emergency_stop",
@@ -4201,13 +2742,9 @@ def handle_callbacks(call):
 
         bot.send_message(
             chat,
-            (
-                "🚨 **EMERGENCY STOP COMPLETE**\n\n"
-                "All hosted processes were stopped."
-            ),
+            "🚨 **EMERGENCY STOP COMPLETE**\n\nAll hosted processes were stopped.",
             parse_mode="Markdown",
         )
-
         return
 
 
@@ -4215,153 +2752,73 @@ def handle_callbacks(call):
 # DEPLOYMENT UPLOAD
 # ============================================================
 
-def process_script_upload(
-    message
-):
-
-    if (
-        message.text
-        and message.text.lower()
-        == "cancel"
-    ):
-
+def process_script_upload(message):
+    if message.text and message.text.lower() == "cancel":
         bot.send_message(
             message.chat.id,
             "❌ Deployment cancelled.",
         )
-
         return
 
     user_id = message.from_user.id
 
-    if (
-        not message.document
-        and not message.text
-    ):
-
+    if not message.document and not message.text:
         bot.send_message(
             message.chat.id,
             "❌ Send Python source or a `.py`/`.zip` file.",
         )
-
         return
 
     bot_id = generate_bot_id()
-
-    bot_dir = os.path.join(
-        HOST_DIR,
-        bot_id,
-    )
-
-    os.makedirs(
-        bot_dir,
-        exist_ok=True,
-    )
-
+    bot_dir = os.path.join(HOST_DIR, bot_id)
+    os.makedirs(bot_dir, exist_ok=True)
     start_time = time.time()
 
     progress = bot.send_message(
         message.chat.id,
-        (
-            f"🔄 **Initializing {bot_id}**\n\n"
-            "`[░░░░░░░░░░] 0%`"
-        ),
+        f"🔄 **Initializing {bot_id}**\n\n`[░░░░░░░░░░] 0%`",
         parse_mode="Markdown",
     )
 
     try:
-
         if message.text:
-
             entry_file = "main.py"
-
             with open(
-                os.path.join(
-                    bot_dir,
-                    entry_file,
-                ),
+                os.path.join(bot_dir, entry_file),
                 "w",
                 encoding="utf-8",
             ) as handle:
-
-                handle.write(
-                    message.text
-                )
+                handle.write(message.text)
 
         else:
+            filename = message.document.file_name
+            filename = os.path.basename(filename)
+            file_size = message.document.file_size or 0
 
-            filename = (
-                message.document.file_name
-            )
+            if not (filename.endswith(".py") or filename.endswith(".zip")):
+                raise ValueError("Only .py and .zip files are supported.")
 
-            filename = os.path.basename(
-                filename
-            )
-
-            file_size = (
-                message.document.file_size
-                or 0
-            )
-
-            if not (
-                filename.endswith(".py")
-                or filename.endswith(".zip")
-            ):
-
-                raise ValueError(
-                    "Only .py and .zip files are supported."
-                )
-
-            if filename.endswith(
-                ".zip"
-            ):
-
-                target_file = os.path.join(
-                    TEMP_DIR,
-                    f"{bot_id}.zip",
-                )
-
+            if filename.endswith(".zip"):
+                target_file = os.path.join(TEMP_DIR, f"{bot_id}.zip")
             else:
+                safe_filename = re.sub(r"[^A-Za-z0-9_.-]", "_", filename)
+                target_file = os.path.join(bot_dir, safe_filename)
 
-                safe_filename = (
-                    re.sub(
-                        r"[^A-Za-z0-9_.-]",
-                        "_",
-                        filename,
-                    )
-                )
-
-                target_file = os.path.join(
-                    bot_dir,
-                    safe_filename,
-                )
-
-            if (
-                file_size
-                > 20 * 1024 * 1024
-                and MTPROTO_AVAILABLE
-            ):
-
+            if file_size > 20 * 1024 * 1024 and MTPROTO_AVAILABLE:
                 update_hud(
                     message.chat.id,
                     progress.message_id,
                     "MTProto Core",
-                    (
-                        "Streaming large payload → "
-                        f"{get_readable_size(file_size)}"
-                    ),
+                    f"Streaming large payload → {get_readable_size(file_size)}",
                     30,
                     start_time,
                 )
-
                 mtproto_download(
                     message.chat.id,
                     message.message_id,
                     target_file,
                 )
-
             else:
-
                 update_hud(
                     message.chat.id,
                     progress.message_id,
@@ -4370,28 +2827,13 @@ def process_script_upload(
                     20,
                     start_time,
                 )
+                file_info = bot.get_file(message.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
 
-                file_info = bot.get_file(
-                    message.document.file_id
-                )
+                with open(target_file, "wb") as handle:
+                    handle.write(downloaded)
 
-                downloaded = bot.download_file(
-                    file_info.file_path
-                )
-
-                with open(
-                    target_file,
-                    "wb",
-                ) as handle:
-
-                    handle.write(
-                        downloaded
-                    )
-
-            if filename.endswith(
-                ".zip"
-            ):
-
+            if filename.endswith(".zip"):
                 update_hud(
                     message.chat.id,
                     progress.message_id,
@@ -4400,56 +2842,28 @@ def process_script_upload(
                     45,
                     start_time,
                 )
-
-                safe_extract_zip(
-                    target_file,
-                    bot_dir,
-                )
-
-                os.remove(
-                    target_file
-                )
+                safe_extract_zip(target_file, bot_dir)
+                os.remove(target_file)
 
                 entry_file = None
-
-                preferred = (
-                    "main.py",
-                    "bot.py",
-                    "app.py",
-                )
+                preferred = ("main.py", "bot.py", "app.py")
 
                 for preferred_name in preferred:
-
-                    for root, _, files in os.walk(
-                        bot_dir
-                    ):
-
+                    for root, _, files in os.walk(bot_dir):
                         if preferred_name in files:
-
                             entry_file = os.path.relpath(
-                                os.path.join(
-                                    root,
-                                    preferred_name,
-                                ),
+                                os.path.join(root, preferred_name),
                                 bot_dir,
                             )
-
                             break
-
                     if entry_file:
                         break
 
                 if not entry_file:
-
-                    raise ValueError(
-                        "ZIP does not contain main.py, bot.py or app.py."
-                    )
+                    raise ValueError("ZIP does not contain main.py, bot.py or app.py.")
 
             else:
-
-                entry_file = os.path.basename(
-                    target_file
-                )
+                entry_file = os.path.basename(target_file)
 
         user_deploy_states[bot_id] = {
             "owner_id": user_id,
@@ -4458,15 +2872,9 @@ def process_script_upload(
             "start_time": start_time,
         }
 
-        requirements_path = os.path.join(
-            bot_dir,
-            "requirements.txt",
-        )
+        requirements_path = os.path.join(bot_dir, "requirements.txt")
 
-        if os.path.exists(
-            requirements_path
-        ):
-
+        if os.path.exists(requirements_path):
             deployment_queue.put(
                 {
                     "chat_id": message.chat.id,
@@ -4476,53 +2884,28 @@ def process_script_upload(
                     "manual_req_path": requirements_path,
                 }
             )
-
             bot.send_message(
                 message.chat.id,
-                (
-                    f"📦 `{bot_id}` found "
-                    "`requirements.txt`.\n"
-                    "Added to deployment queue."
-                ),
+                f"📦 `{bot_id}` found `requirements.txt`.\nAdded to deployment queue.",
                 parse_mode="Markdown",
             )
-
             return
 
         bot.edit_message_text(
-            (
-                f"📦 **Secure Node Locked:** `{bot_id}`\n\n"
-                "Choose dependency protocol:"
-            ),
+            f"📦 **Secure Node Locked:** `{bot_id}`\n\nChoose dependency protocol:",
             message.chat.id,
             progress.message_id,
             parse_mode="Markdown",
-            reply_markup=get_package_menu(
-                bot_id
-            ),
+            reply_markup=get_package_menu(bot_id),
         )
 
     except Exception as exc:
-
-        logger.exception(
-            "Upload failed."
-        )
-
-        shutil.rmtree(
-            bot_dir,
-            ignore_errors=True,
-        )
-
-        user_deploy_states.pop(
-            bot_id,
-            None,
-        )
+        logger.exception("Upload failed.")
+        shutil.rmtree(bot_dir, ignore_errors=True)
+        user_deploy_states.pop(bot_id, None)
 
         bot.edit_message_text(
-            (
-                "❌ **Deployment Failed**\n\n"
-                f"`{safe_text(exc, 2000)}`"
-            ),
+            f"❌ **Deployment Failed**\n\n`{safe_text(exc, 2000)}`",
             message.chat.id,
             progress.message_id,
             parse_mode="Markdown",
@@ -4540,11 +2923,7 @@ def finalize_deployment(
     install_type,
     manual_req_path=None,
 ):
-
-    state = user_deploy_states.get(
-        bot_id
-    )
-
+    state = user_deploy_states.get(bot_id)
     if not state:
         return
 
@@ -4552,33 +2931,18 @@ def finalize_deployment(
     entry_file = state["entry_file"]
     start_time = state["start_time"]
 
-    bot_dir = os.path.join(
-        HOST_DIR,
-        bot_id,
-    )
-
-    script_path = os.path.join(
-        bot_dir,
-        entry_file,
-    )
+    bot_dir = os.path.join(HOST_DIR, bot_id)
+    script_path = os.path.join(bot_dir, entry_file)
 
     try:
-
-        if not os.path.isfile(
-            script_path
-        ):
-            raise FileNotFoundError(
-                "Entry file disappeared."
-            )
+        if not os.path.isfile(script_path):
+            raise FileNotFoundError("Entry file disappeared.")
 
         if (
             install_type == "manual"
             and manual_req_path
-            and os.path.exists(
-                manual_req_path
-            )
+            and os.path.exists(manual_req_path)
         ):
-
             update_hud(
                 chat_id,
                 msg_id,
@@ -4605,13 +2969,9 @@ def finalize_deployment(
             )
 
             if result.returncode != 0:
-
-                raise RuntimeError(
-                    result.stderr[-2000:]
-                )
+                raise RuntimeError(result.stderr[-2000:])
 
         else:
-
             update_hud(
                 chat_id,
                 msg_id,
@@ -4621,23 +2981,16 @@ def finalize_deployment(
                 start_time,
             )
 
-            packages = deep_analyze_imports(
-                bot_dir
-            )
-
-            success, error = (
-                auto_install_packages_verified(
-                    packages,
-                    chat_id,
-                    msg_id,
-                    start_time,
-                )
+            packages = deep_analyze_imports(bot_dir)
+            success, error = auto_install_packages_verified(
+                packages,
+                chat_id,
+                msg_id,
+                start_time,
             )
 
             if not success:
-                raise RuntimeError(
-                    error
-                )
+                raise RuntimeError(error)
 
         update_hud(
             chat_id,
@@ -4648,10 +3001,7 @@ def finalize_deployment(
             start_time,
         )
 
-        py_compile.compile(
-            script_path,
-            doraise=True,
-        )
+        py_compile.compile(script_path, doraise=True)
 
         result = start_bot_once(
             bot_id,
@@ -4662,33 +3012,18 @@ def finalize_deployment(
         )
 
         if not result["started"]:
+            raise RuntimeError("Bot unexpectedly became active before deployment.")
 
-            raise RuntimeError(
-                "Bot unexpectedly became active before deployment."
-            )
-
-        ensure_metrics(
-            bot_id
-        )["deployments"] += 1
+        ensure_metrics(bot_id)["deployments"] += 1
 
         bot_metadata[bot_id] = {
             "owner_id": user_id,
             "entry_file": entry_file,
-            "created_at": bot_metadata.get(
-                bot_id,
-                {},
-            ).get(
-                "created_at",
-                now_iso(),
-            ),
+            "created_at": bot_metadata.get(bot_id, {}).get("created_at", now_iso()),
             "last_deployed": now_iso(),
         }
 
-        user_deploy_states.pop(
-            bot_id,
-            None,
-        )
-
+        user_deploy_states.pop(bot_id, None)
         save_registry()
 
         update_hud(
@@ -4708,33 +3043,19 @@ def finalize_deployment(
                 f"🟢 Status: `RUNNING`\n"
                 f"🆔 PID: `{result['pid']}`\n\n"
                 "🛡 Duplicate protection is active.\n"
-                "If this same bot is requested again while "
-                "running, no second process will be created."
+                "If this same bot is requested again while running, no second process will be created."
             ),
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id,
-                True,
-            ),
+            reply_markup=get_control_panel(bot_id, True),
         )
 
     except Exception as exc:
-
-        logger.exception(
-            "Final deployment failed."
-        )
-
-        record_error(
-            bot_id,
-            exc,
-        )
+        logger.exception("Final deployment failed.")
+        record_error(bot_id, exc)
 
         bot.send_message(
             chat_id,
-            (
-                "❌ **Deployment Halted**\n\n"
-                f"`{safe_text(exc, 2500)}`"
-            ),
+            f"❌ **Deployment Halted**\n\n`{safe_text(exc, 2500)}`",
             parse_mode="Markdown",
         )
 
@@ -4743,97 +3064,44 @@ def finalize_deployment(
 # SEARCH BOT
 # ============================================================
 
-def process_search_bot(
-    message
-):
-
-    if (
-        message.text
-        and message.text.lower()
-        == "cancel"
-    ):
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Search cancelled.",
-        )
-
+def process_search_bot(message):
+    if message.text and message.text.lower() == "cancel":
+        bot.send_message(message.chat.id, "❌ Search cancelled.")
         return
 
-    query = (
-        message.text
-        .strip()
-        .upper()
-    )
+    query = message.text.strip().upper()
+    if not query.startswith("BOT-"):
+        query = f"BOT-{query}"
 
-    if not query.startswith(
-        "BOT-"
-    ):
-
-        query = (
-            "BOT-"
-            + query
-        )
-
-    record = hosted_processes.get(
-        query
-    )
-
+    record = hosted_processes.get(query)
     if not record:
-
         bot.send_message(
             message.chat.id,
-            (
-                f"❌ `{query}` was not found.\n\n"
-                "➕ You can deploy a new bot instead."
-            ),
+            f"❌ `{query}` was not found.\n\n➕ You can deploy a new bot instead.",
             parse_mode="Markdown",
-            reply_markup=get_user_menu(
-                message.from_user.id
-            ),
+            reply_markup=get_user_menu(message.from_user.id),
         )
-
         return
 
-    owner_id = record.get(
-        "owner_id"
-    )
-
-    if (
-        not is_admin(
-            message.from_user.id
-        )
-        and int(owner_id)
-        != int(message.from_user.id)
-    ):
+    owner_id = record.get("owner_id")
+    if not is_admin(message.from_user.id) and int(owner_id) != int(message.from_user.id):
         return
 
-    if is_bot_running(
-        query
-    ):
-
+    if is_bot_running(query):
         text = (
             f"🤖 **{query}**\n\n"
             "🟢 **ALREADY RUNNING**\n\n"
             "⚠️ A duplicate process will NOT be created.\n"
             "If you want a restart, choose Restart."
         )
-
     else:
-
-        text = (
-            f"🤖 **{query}**\n\n"
-            "🔴 **STOPPED**\n\n"
-            "You can start it again."
-        )
+        text = f"🤖 **{query}**\n\n🔴 **STOPPED**\n\nYou can start it again."
 
     bot.send_message(
         message.chat.id,
         text,
         parse_mode="Markdown",
-        reply_markup=get_control_panel(
-            query
-        ),
+        reply_markup=get_control_panel(query),
     )
 
 
@@ -4841,115 +3109,40 @@ def process_search_bot(
 # CODE UPDATE
 # ============================================================
 
-def save_edited_code(
-    message,
-    bot_id,
-):
-
-    if (
-        message.text
-        and message.text.lower()
-        == "cancel"
-    ):
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Update cancelled.",
-        )
-
+def save_edited_code(message, bot_id):
+    if message.text and message.text.lower() == "cancel":
+        bot.send_message(message.chat.id, "❌ Update cancelled.")
         return
 
-    record = hosted_processes.get(
-        bot_id
-    )
-
+    record = hosted_processes.get(bot_id)
     if not record:
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Bot integrity record not found.",
-        )
-
+        bot.send_message(message.chat.id, "❌ Bot integrity record not found.")
         return
 
-    owner_id = record.get(
-        "owner_id"
-    )
-
-    if (
-        not is_admin(
-            message.from_user.id
-        )
-        and int(owner_id)
-        != int(message.from_user.id)
-    ):
+    owner_id = record.get("owner_id")
+    if not is_admin(message.from_user.id) and int(owner_id) != int(message.from_user.id):
         return
 
-    bot_dir = os.path.join(
-        HOST_DIR,
-        bot_id,
-    )
-
-    script_path = os.path.join(
-        bot_dir,
-        record["entry_file"],
-    )
+    bot_dir = os.path.join(HOST_DIR, bot_id)
+    script_path = os.path.join(bot_dir, record["entry_file"])
 
     try:
-
-        create_bot_version(
-            bot_id,
-            reason="pre_code_update",
-        )
+        create_bot_version(bot_id, reason="pre_code_update")
 
         if message.document:
-
-            info = bot.get_file(
-                message.document.file_id
-            )
-
-            content = bot.download_file(
-                info.file_path
-            )
-
-            with open(
-                script_path,
-                "wb",
-            ) as handle:
-
-                handle.write(
-                    content
-                )
-
+            info = bot.get_file(message.document.file_id)
+            content = bot.download_file(info.file_path)
+            with open(script_path, "wb") as handle:
+                handle.write(content)
         elif message.text:
-
-            with open(
-                script_path,
-                "w",
-                encoding="utf-8",
-            ) as handle:
-
-                handle.write(
-                    message.text
-                )
-
+            with open(script_path, "w", encoding="utf-8") as handle:
+                handle.write(message.text)
         else:
+            raise ValueError("No code was supplied.")
 
-            raise ValueError(
-                "No code was supplied."
-            )
+        py_compile.compile(script_path, doraise=True)
 
-        py_compile.compile(
-            script_path,
-            doraise=True,
-        )
-
-        # Explicit code update intentionally restarts once.
-        restart_bot(
-            bot_id,
-            owner_id,
-            notify=False,
-        )
+        restart_bot(bot_id, owner_id, notify=False)
 
         bot.send_message(
             message.chat.id,
@@ -4960,25 +3153,14 @@ def save_edited_code(
                 "🛡 Duplicate process protection remains active."
             ),
             parse_mode="Markdown",
-            reply_markup=get_control_panel(
-                bot_id,
-                True,
-            ),
+            reply_markup=get_control_panel(bot_id, True),
         )
 
     except Exception as exc:
-
-        record_error(
-            bot_id,
-            exc,
-        )
-
+        record_error(bot_id, exc)
         bot.send_message(
             message.chat.id,
-            (
-                "❌ **Code Update Failed**\n\n"
-                f"`{safe_text(exc, 2000)}`"
-            ),
+            f"❌ **Code Update Failed**\n\n`{safe_text(exc, 2000)}`",
             parse_mode="Markdown",
         )
 
@@ -4987,78 +3169,36 @@ def save_edited_code(
 # ENVIRONMENT VARIABLE
 # ============================================================
 
-def save_env_var(
-    message
-):
-
-    if (
-        not message.text
-    ):
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Send KEY=VALUE.",
-        )
-
+def save_env_var(message):
+    if not message.text:
+        bot.send_message(message.chat.id, "❌ Send KEY=VALUE.")
         return
 
-    if (
-        message.text.lower()
-        == "cancel"
-    ):
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Cancelled.",
-        )
-
+    if message.text.lower() == "cancel":
+        bot.send_message(message.chat.id, "❌ Cancelled.")
         return
 
     try:
-
-        key, value = (
-            message.text.split(
-                "=",
-                1,
-            )
-        )
-
+        key, value = message.text.split("=", 1)
         key = key.strip()
         value = value.strip()
 
-        if not re.match(
-            r"^[A-Za-z_][A-Za-z0-9_]*$",
-            key,
-        ):
-            raise ValueError(
-                "Invalid environment variable name."
-            )
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            raise ValueError("Invalid environment variable name.")
 
-        user_custom_envs.setdefault(
-            str(message.from_user.id),
-            {},
-        )[key] = value
-
+        user_custom_envs.setdefault(str(message.from_user.id), {})[key] = value
         save_registry()
 
         bot.send_message(
             message.chat.id,
-            (
-                "✅ **ENV SAVED**\n\n"
-                f"🔑 `{key}`\n"
-                "🔒 Value stored securely and masked in UI."
-            ),
+            f"✅ **ENV SAVED**\n\n🔑 `{key}`\n🔒 Value stored securely and masked in UI.",
             parse_mode="Markdown",
         )
 
     except Exception as exc:
-
         bot.send_message(
             message.chat.id,
-            (
-                "❌ Invalid format.\n"
-                "Use `KEY=VALUE`."
-            ),
+            "❌ Invalid format.\nUse `KEY=VALUE`.",
             parse_mode="Markdown",
         )
 
@@ -5067,94 +3207,32 @@ def save_env_var(
 # MANUAL REQUIREMENTS
 # ============================================================
 
-def handle_manual_reqs(
-    message,
-    bot_id,
-):
-
-    if (
-        message.text
-        and message.text.lower()
-        == "cancel"
-    ):
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Dependency setup cancelled.",
-        )
-
+def handle_manual_reqs(message, bot_id):
+    if message.text and message.text.lower() == "cancel":
+        bot.send_message(message.chat.id, "❌ Dependency setup cancelled.")
         return
 
-    bot_dir = os.path.join(
-        HOST_DIR,
-        bot_id,
-    )
-
-    req_path = os.path.join(
-        bot_dir,
-        "requirements.txt",
-    )
+    bot_dir = os.path.join(HOST_DIR, bot_id)
+    req_path = os.path.join(bot_dir, "requirements.txt")
 
     try:
-
         if message.document:
-
-            info = bot.get_file(
-                message.document.file_id
-            )
-
-            content = bot.download_file(
-                info.file_path
-            )
-
-            with open(
-                req_path,
-                "wb",
-            ) as handle:
-
-                handle.write(
-                    content
-                )
-
+            info = bot.get_file(message.document.file_id)
+            content = bot.download_file(info.file_path)
+            with open(req_path, "wb") as handle:
+                handle.write(content)
         elif message.text:
-
-            requirements = (
-                message.text.replace(
-                    ",",
-                    "\n",
-                )
-            )
-
-            with open(
-                req_path,
-                "w",
-                encoding="utf-8",
-            ) as handle:
-
-                handle.write(
-                    requirements
-                )
-
+            requirements = message.text.replace(",", "\n")
+            with open(req_path, "w", encoding="utf-8") as handle:
+                handle.write(requirements)
         else:
+            raise ValueError("No requirements supplied.")
 
-            raise ValueError(
-                "No requirements supplied."
-            )
-
-        state = user_deploy_states.get(
-            bot_id
-        )
-
+        state = user_deploy_states.get(bot_id)
         if not state:
-            raise ValueError(
-                "Deployment state expired."
-            )
+            raise ValueError("Deployment state expired.")
 
-        progress = bot.send_message(
-            message.chat.id,
-            "📥 Added to deployment queue...",
-        )
-
+        progress = bot.send_message(message.chat.id, "📥 Added to deployment queue...")
         deployment_queue.put(
             {
                 "chat_id": message.chat.id,
@@ -5166,7 +3244,6 @@ def handle_manual_reqs(
         )
 
     except Exception as exc:
-
         bot.send_message(
             message.chat.id,
             f"❌ `{safe_text(exc)}`",
@@ -5178,32 +3255,15 @@ def handle_manual_reqs(
 # BROADCAST
 # ============================================================
 
-def process_broadcast(
-    message
-):
-
-    if (
-        message.text
-        and message.text.lower()
-        == "cancel"
-    ):
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Broadcast cancelled.",
-        )
-
+def process_broadcast(message):
+    if message.text and message.text.lower() == "cancel":
+        bot.send_message(message.chat.id, "❌ Broadcast cancelled.")
         return
 
-    if not is_admin(
-        message.from_user.id
-    ):
+    if not is_admin(message.from_user.id):
         return
 
-    user_chats.add(
-        message.chat.id
-    )
-
+    user_chats.add(message.chat.id)
     save_registry()
 
     status = bot.send_message(
@@ -5213,52 +3273,33 @@ def process_broadcast(
     )
 
     def run_broadcast():
-
         success = 0
         failed = 0
 
-        for target_id in list(
-            user_chats
-        ):
-
+        for target_id in list(user_chats):
             try:
-
                 bot.copy_message(
                     chat_id=target_id,
                     from_chat_id=message.chat.id,
                     message_id=message.message_id,
                 )
-
                 success += 1
-
-                time.sleep(
-                    0.15
-                )
-
+                time.sleep(0.15)
             except Exception:
                 failed += 1
 
         try:
-
             bot.edit_message_text(
-                (
-                    "✅ **Broadcast completed**\n\n"
-                    f"🟢 Success: `{success}`\n"
-                    f"🔴 Failed: `{failed}`"
-                ),
+                f"✅ **Broadcast completed**\n\n🟢 Success: `{success}`\n🔴 Failed: `{failed}`",
                 message.chat.id,
                 status.message_id,
                 parse_mode="Markdown",
                 reply_markup=get_admin_menu(),
             )
-
         except Exception:
             pass
 
-    threading.Thread(
-        target=run_broadcast,
-        daemon=True,
-    ).start()
+    threading.Thread(target=run_broadcast, daemon=True).start()
 
 
 # ============================================================
@@ -5266,56 +3307,28 @@ def process_broadcast(
 # ============================================================
 
 def cleanup_engine():
-
     global SHUTDOWN_REQUESTED
-
     SHUTDOWN_REQUESTED = True
 
-    logger.info(
-        "Graceful shutdown initiated."
-    )
+    logger.info("Graceful shutdown initiated.")
 
-    for bot_id in list(
-        hosted_processes.keys()
-    ):
-
+    for bot_id in list(hosted_processes.keys()):
         try:
-
-            stop_script_process(
-                bot_id,
-                reason="engine_shutdown",
-            )
-
+            stop_script_process(bot_id, reason="engine_shutdown")
         except Exception:
-            logger.exception(
-                "Failed stopping %s",
-                bot_id,
-            )
+            logger.exception("Failed stopping %s", bot_id)
 
     try:
         save_registry()
     except Exception:
-        logger.exception(
-            "Final registry save failed."
-        )
+        logger.exception("Final registry save failed.")
 
     release_engine_lock()
-
-    logger.info(
-        "Graceful shutdown complete."
-    )
+    logger.info("Graceful shutdown complete.")
 
 
-def signal_handler(
-    signum,
-    frame,
-):
-
-    logger.info(
-        "Received signal %s.",
-        signum,
-    )
-
+def signal_handler(signum, frame):
+    logger.info("Received signal %s.", signum)
     cleanup_engine()
 
 
@@ -5325,55 +3338,26 @@ def signal_handler(
 
 @app.route("/")
 def home():
-
-    running = sum(
-        is_bot_running(
-            bot_id
-        )
-        for bot_id in hosted_processes
-    )
-
-    return (
-        "⚡ XX Supercharged Hosting Engine Live! "
-        f"Active Bots: {running}"
-    )
+    running = sum(is_bot_running(bot_id) for bot_id in hosted_processes)
+    return f"⚡ XX Supercharged Hosting Engine Live! Active Bots: {running}"
 
 
 @app.route("/health")
 def health():
-
     if psutil:
-
         memory = psutil.virtual_memory()
-
-        cpu = psutil.cpu_percent(
-            interval=0.05
-        )
-
+        cpu = psutil.cpu_percent(interval=0.05)
         memory_percent = memory.percent
-
     else:
-
         cpu = 0
         memory_percent = 0
 
     return jsonify(
         {
             "status": "ok",
-            "uptime": get_readable_uptime(
-                time.time()
-                - engine_start_time
-            ),
-            "bots_total": len(
-                hosted_processes
-            ),
-            "bots_running": sum(
-                is_bot_running(
-                    bot_id
-                )
-                for bot_id
-                in hosted_processes
-            ),
+            "uptime": get_readable_uptime(time.time() - engine_start_time),
+            "bots_total": len(hosted_processes),
+            "bots_running": sum(is_bot_running(bot_id) for bot_id in hosted_processes),
             "cpu_percent": cpu,
             "memory_percent": memory_percent,
             "python": platform.python_version(),
@@ -5388,19 +3372,12 @@ def health():
 # ============================================================
 
 def registry_flush_worker():
-
     while not SHUTDOWN_REQUESTED:
-
-        time.sleep(
-            30
-        )
-
+        time.sleep(30)
         try:
             save_registry()
         except Exception:
-            logger.exception(
-                "Periodic registry save failed."
-            )
+            logger.exception("Periodic registry save failed.")
 
 
 # ============================================================
@@ -5408,49 +3385,16 @@ def registry_flush_worker():
 # ============================================================
 
 def validate_environment():
-
     if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN is required."
-        )
+        raise RuntimeError("BOT_TOKEN is required.")
 
-    if not os.path.isdir(
-        HOST_DIR
-    ):
-        os.makedirs(
-            HOST_DIR,
-            exist_ok=True,
-        )
-
-    if not os.path.isdir(
-        LOG_DIR
-    ):
-        os.makedirs(
-            LOG_DIR,
-            exist_ok=True,
-        )
-
-    if not os.path.isdir(
-        TEMP_DIR
-    ):
-        os.makedirs(
-            TEMP_DIR,
-            exist_ok=True,
-        )
+    for directory in (HOST_DIR, LOG_DIR, TEMP_DIR, RUNNER_DIR):
+        os.makedirs(directory, exist_ok=True)
 
 
 # ============================================================
-# XX SUPERCHARGED EXTENSION PACK v1.0
-# NON-DESTRUCTIVE ADD-ON: original engine remains intact.
+# XX SUPERCHARGED EXTENSION PACK
 # ============================================================
-
-import csv
-import io
-import sqlite3
-import shlex
-import subprocess as _subprocess_ext
-from datetime import datetime, timedelta
-from urllib.parse import urlparse
 
 EXT_DIR = os.path.join(BASE_DIR, "extension_data")
 EXT_STATE_FILE = os.path.join(EXT_DIR, "extension_state.json")
@@ -5458,6 +3402,7 @@ SCHEDULE_FILE = os.path.join(EXT_DIR, "schedules.json")
 TEAM_FILE = os.path.join(EXT_DIR, "team.json")
 TEMPLATE_DIR = os.path.join(EXT_DIR, "templates")
 PUBLIC_STATUS_DIR = os.path.join(EXT_DIR, "public_status")
+
 for _d in (EXT_DIR, TEMPLATE_DIR, PUBLIC_STATUS_DIR):
     os.makedirs(_d, exist_ok=True)
 
@@ -5474,12 +3419,13 @@ extension_state: Dict[str, Any] = {
 }
 ext_state_lock = threading.RLock()
 
-AI_ENDPOINT = os.environ.get("AI_ENDPOINT", "").strip()
-AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
-AI_MODEL = os.environ.get("AI_MODEL", "").strip()
 DOCKER_BIN = shutil.which("docker")
 BLACK_BIN = shutil.which("black")
 NGROK_URL = os.environ.get("NGROK_URL", "").strip()
+
+
+def ext_ai_available():
+    return bool(AI_ENDPOINT and AI_API_KEY and AI_API_KEY != "NA")
 
 
 def _load_json_file(path, default):
@@ -5493,7 +3439,7 @@ def _load_json_file(path, default):
 
 
 def _save_json_file(path, value):
-    tmp = path + ".tmp"
+    tmp = f"{path}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(value, f, indent=2, ensure_ascii=False)
@@ -5512,8 +3458,12 @@ def extension_load_state():
     global extension_state
     with ext_state_lock:
         extension_state.update(_load_json_file(EXT_STATE_FILE, {}))
-        extension_state["schedules"] = _load_json_file(SCHEDULE_FILE, extension_state.get("schedules", []))
-        extension_state["team"] = _load_json_file(TEAM_FILE, extension_state.get("team", {}))
+        extension_state["schedules"] = _load_json_file(
+            SCHEDULE_FILE, extension_state.get("schedules", [])
+        )
+        extension_state["team"] = _load_json_file(
+            TEAM_FILE, extension_state.get("team", {})
+        )
 
 
 def extension_save_state():
@@ -5535,26 +3485,11 @@ def ext_mode(uid):
     return user_sessions.setdefault(str(uid), {}).get("mode", "normal")
 
 
-def ext_language(uid):
-    return extension_state.get("language", {}).get(str(uid), "en")
-
-
-def ext_t(uid, en, hi):
-    return hi if ext_language(uid) == "hi" else en
-
-
 def ext_set_mode(uid, mode):
     user_sessions.setdefault(str(uid), {})["mode"] = mode
     user_sessions[str(uid)]["updated_at"] = now_iso()
     extension_state.setdefault("modes", {})[str(uid)] = mode
     extension_save_state()
-
-
-def ext_mask(value):
-    value = str(value or "")
-    if len(value) <= 6:
-        return "••••••"
-    return value[:2] + "•" * min(12, len(value) - 4) + value[-2:]
 
 
 def ext_rate_allowed(uid, action="default", limit=12, window=60):
@@ -5615,16 +3550,20 @@ def python_board_text(uid):
     bid = ext_require_bot(uid)
     if bid:
         status = get_bot_status(bid)
-        return (f"🐍 **PYTHON HOSTING BOARD**\n\n"
-                f"🤖 Active: `{bid}`\n"
-                f"🟢 Status: `{status.get('status','unknown')}`\n"
-                f"❤️ Health: `{status.get('status','unknown')}`\n\n"
-                "Choose Auto/Manual or open any control center below.")
-    return ("🐍 **PYTHON HOSTING BOARD**\n\n"
-            "🤖 Auto mode detects the project, entry point and dependencies.\n"
-            "🛠️ Manual mode gives full control.\n"
-            "📦 `.py` and `.zip` projects are supported.\n\n"
-            "No project selected yet.")
+        return (
+            f"🐍 **PYTHON HOSTING BOARD**\n\n"
+            f"🤖 Active: `{bid}`\n"
+            f"🟢 Status: `{status.get('status','unknown')}`\n"
+            f"❤️ Health: `{status.get('status','unknown')}`\n\n"
+            "Choose Auto/Manual or open any control center below."
+        )
+    return (
+        "🐍 **PYTHON HOSTING BOARD**\n\n"
+        "🤖 Auto mode detects the project, entry point and dependencies.\n"
+        "🛠️ Manual mode gives full control.\n"
+        "📦 `.py` and `.zip` projects are supported.\n\n"
+        "No project selected yet."
+    )
 
 
 def ext_mode_menu(uid):
@@ -5642,6 +3581,7 @@ def ext_mode_menu(uid):
         InlineKeyboardButton("🔙 Mode Selection", callback_data="x_features"),
     )
     return m
+
 
 def ext_tools_menu():
     m = InlineKeyboardMarkup(row_width=2)
@@ -5686,22 +3626,6 @@ def ext_security_menu():
         InlineKeyboardButton("🛡️ Rate Limit Status", callback_data="x_rate"),
         InlineKeyboardButton("🔙 Features", callback_data="x_features"),
     )
-    return m
-
-
-def ext_mode_menu(uid):
-    """Second-level menu shown immediately after Normal/AI selection."""
-    m = InlineKeyboardMarkup(row_width=2)
-    mode = ext_mode(uid)
-    m.add(
-        InlineKeyboardButton("🐍 Python Board", callback_data="x_python_board"),
-        InlineKeyboardButton("🌐 Web Languages Runner", callback_data="x_web_runner"),
-    )
-    if mode == "ai":
-        m.add(InlineKeyboardButton("🧠 AI Tools", callback_data="x_ai"))
-    else:
-        m.add(InlineKeyboardButton("🧰 Normal Tools", callback_data="x_tools"))
-    m.add(InlineKeyboardButton("🔙 Mode Selection", callback_data="x_features"))
     return m
 
 
@@ -5829,7 +3753,6 @@ def ext_requirements_for_bot(bot_id):
     if not os.path.isdir(folder):
         return []
     detected = deep_analyze_imports(folder)
-    # Normalize package map entries and remove duplicates.
     return list(dict.fromkeys(detected))
 
 
@@ -5851,7 +3774,7 @@ def ext_format_bot(bot_id):
             fp = os.path.join(root, name)
             if BLACK_BIN:
                 try:
-                    r = _subprocess_ext.run([BLACK_BIN, fp, "--quiet"], capture_output=True, text=True, timeout=60)
+                    r = subprocess.run([BLACK_BIN, fp, "--quiet"], capture_output=True, text=True, timeout=60)
                     if r.returncode == 0:
                         changed.append(os.path.relpath(fp, folder))
                 except Exception:
@@ -5861,12 +3784,11 @@ def ext_format_bot(bot_id):
 
 def ext_dependency_cve_hint(bot_id):
     packages = ext_requirements_for_bot(bot_id)
-    # Offline-safe scanner: reports packages and asks pip-audit when available.
     audit = shutil.which("pip-audit")
     if not audit:
         return "ℹ️ `pip-audit` is not installed.\nDetected dependencies:\n" + "\n".join(f"• `{x}`" for x in packages)
     try:
-        r = _subprocess_ext.run([audit, "-r", os.path.join(HOST_DIR, bot_id, "requirements.generated.txt")], capture_output=True, text=True, timeout=180)
+        r = subprocess.run([audit, "-r", os.path.join(HOST_DIR, bot_id, "requirements.generated.txt")], capture_output=True, text=True, timeout=180)
         return safe_text(r.stdout or r.stderr or "No audit output.", 3500)
     except Exception as exc:
         return f"❌ CVE audit failed: `{exc}`"
@@ -5892,15 +3814,7 @@ def ext_backup_bot(bot_id):
     stamp = time.strftime("%Y%m%d_%H%M%S")
     target = os.path.join(BACKUP_DIR, f"{bot_id}_{stamp}")
     shutil.make_archive(target, "zip", folder)
-    return target + ".zip"
-
-
-def ext_full_backup():
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    target = os.path.join(BACKUP_DIR, f"engine_full_{stamp}")
-    shutil.make_archive(target, "zip", BASE_DIR)
-    return target + ".zip"
+    return f"{target}.zip"
 
 
 def ext_send_file(chat_id, path, caption=""):
@@ -5914,22 +3828,6 @@ def ext_export_env(uid):
     return text or "# No custom environment variables"
 
 
-def ext_import_env(uid, text):
-    envs = user_custom_envs.setdefault(str(uid), {})
-    count = 0
-    for raw in text.splitlines():
-        raw = raw.strip()
-        if not raw or raw.startswith("#") or "=" not in raw:
-            continue
-        key, value = raw.split("=", 1)
-        key = key.strip()
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-            envs[key] = value.strip().strip("\"").strip("'")
-            count += 1
-    save_registry()
-    return count
-
-
 def ext_public_status():
     statuses = []
     for bid, rec in hosted_processes.items():
@@ -5941,56 +3839,19 @@ def ext_public_status():
 
 
 def ext_bandwidth(bot_id):
-    rec = hosted_processes.get(bot_id) or {}
-    pid = (rec.get("process") or None)
-    if not pid or not psutil or pid.poll() is not None:
-        return {"rx": 0, "tx": 0, "note": "Per-process network counters unavailable on this host."}
-    # Linux /proc fallback is intentionally best-effort; psutil does not expose per-process net bytes.
-    return {"rx": 0, "tx": 0, "note": "Per-process network counters unavailable; host-wide counters can be added by platform."}
+    return {"rx": 0, "tx": 0, "note": "Per-process network counters are host/platform dependent."}
 
 
 def ext_docker_status():
     if not DOCKER_BIN:
         return "🔴 Docker CLI not available on this host."
     try:
-        r = _subprocess_ext.run([DOCKER_BIN, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run([DOCKER_BIN, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=15)
         if r.returncode == 0:
             return f"🟢 Docker available — `{r.stdout.strip()}`"
         return f"🔴 Docker unavailable: `{safe_text(r.stderr, 1000)}`"
     except Exception as exc:
         return f"🔴 Docker check failed: `{exc}`"
-
-
-def ext_safe_docker_run(bot_id, command):
-    if not DOCKER_BIN:
-        return False, "Docker is not installed."
-    if not ext_is_owner(user_sessions.get(str(bot_id), {}).get("uid", 0), bot_id):
-        return False, "Permission denied."
-    return False, "Docker sandbox is provisioned as an optional deployment target; enable it per host policy."
-
-
-def ext_allowed_terminal(bot_id, command, uid):
-    if not ext_is_owner(uid, bot_id):
-        return "❌ Permission denied."
-    try:
-        parts = shlex.split(command)
-    except Exception:
-        return "❌ Invalid command syntax."
-    if not parts:
-        return ""
-    allowed = {"pwd", "ls", "dir", "python", "python3", "pip", "pip3"}
-    if parts[0] not in allowed:
-        return "🛡️ Only safe read/package commands are allowed: `pwd`, `ls`, `python --version`, `pip --version`."
-    if parts[0] in {"python", "python3"} and len(parts) > 2:
-        return "🛡️ Python execution is restricted inside the Telegram terminal."
-    if parts[0] in {"pip", "pip3"} and len(parts) > 2 and parts[1] not in {"--version", "list", "show"}:
-        return "🛡️ Package installation is controlled by the deployment engine."
-    folder = os.path.join(HOST_DIR, bot_id)
-    try:
-        r = _subprocess_ext.run(parts, cwd=folder, capture_output=True, text=True, timeout=20)
-        return safe_text((r.stdout or r.stderr or "(no output)"), 3500)
-    except Exception as exc:
-        return f"❌ Terminal error: `{exc}`"
 
 
 def ext_github_deploy(url, uid):
@@ -6010,7 +3871,7 @@ def ext_github_deploy(url, uid):
         shutil.rmtree(dest, ignore_errors=True)
         raise RuntimeError("Git is not installed on the hosting host.")
     clone_url = f"https://github.com/{owner}/{repo}.git"
-    r = _subprocess_ext.run([git, "clone", "--depth", "1", clone_url, dest], capture_output=True, text=True, timeout=300)
+    r = subprocess.run([git, "clone", "--depth", "1", clone_url, dest], capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         shutil.rmtree(dest, ignore_errors=True)
         raise RuntimeError(safe_text(r.stderr, 2000))
@@ -6052,11 +3913,22 @@ def ext_naming_assistant(uid):
 
 
 def ext_ai_request(prompt, context=""):
-    if not AI_ENDPOINT or not AI_API_KEY:
-        return "AI provider is not configured. Set `AI_ENDPOINT`, `AI_API_KEY` and optionally `AI_MODEL` in the hosting environment."
+    if not AI_ENDPOINT or not AI_API_KEY or AI_API_KEY == "NA":
+        return "AI provider is not active or set to NA. Configure `AI_API_KEY` with a valid token to enable live AI analysis."
     try:
-        payload = {"model": AI_MODEL, "messages": [{"role": "system", "content": "You are a concise, security-conscious hosting assistant."}, {"role": "user", "content": prompt + "\n\nCONTEXT:\n" + context}]}
-        r = requests.post(AI_ENDPOINT, headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=45)
+        payload = {
+            "model": AI_MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a concise, security-conscious hosting assistant."},
+                {"role": "user", "content": f"{prompt}\n\nCONTEXT:\n{context}"}
+            ]
+        }
+        r = requests.post(
+            AI_ENDPOINT,
+            headers={"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=45
+        )
         r.raise_for_status()
         data = r.json()
         return safe_text(data.get("choices", [{}])[0].get("message", {}).get("content", data), 5000)
@@ -6112,16 +3984,16 @@ def ext_ai_action(uid, action):
     else:
         context = ext_ai_context_bot(bot_id)
     prompts = {
-        "review": "Review this hosted code for bugs, reliability and safe deployment. Give actionable findings without claiming certainty.",
-        "opt": "Suggest safe performance and maintainability optimizations. Do not remove required behavior.",
-        "req": "Infer likely Python dependencies from this code and produce a conservative requirements list.",
-        "sec": "Perform a security review focusing on secrets, unsafe subprocesses, file traversal, permissions and network exposure.",
-        "env": "Explain which environment variables this project appears to need and why. Never invent secret values.",
+        "review": "Review this hosted code for bugs, reliability and safe deployment.",
+        "opt": "Suggest safe performance and maintainability optimizations.",
+        "req": "Infer likely Python dependencies from this code and produce a requirements list.",
+        "sec": "Perform a security review focusing on secrets, unsafe subprocesses, and permissions.",
+        "env": "Explain which environment variables this project appears to need.",
         "logs": "Summarize these logs into symptoms, likely causes and next safe actions.",
-        "health": "Assess likely operational risks from this hosting context and give a cautious 24-hour risk assessment.",
-        "heal": "Explain the safest automated recovery strategy for this bot and what should not be automated.",
-        "crash": "Analyze this crash log, identify the most likely root causes and suggest a minimal fix plan.",
-        "broadcast": "Draft a concise professional hosting maintenance/update announcement for Telegram.",
+        "health": "Assess operational risks from this hosting context.",
+        "heal": "Explain the safest automated recovery strategy for this bot.",
+        "crash": "Analyze this crash log and suggest a minimal fix plan.",
+        "broadcast": "Draft a concise professional hosting update announcement for Telegram.",
         "support": "Explain how to use this hosting engine to a beginner in simple language.",
         "search": "Provide a natural-language search interpretation for the user's hosted bot list.",
     }
@@ -6163,7 +4035,7 @@ def ext_template_create(kind, uid):
         "telegram": 'import os\nimport telebot\n\nbot = telebot.TeleBot(os.environ.get("BOT_TOKEN", ""))\n\n@bot.message_handler(commands=["start"])\ndef start(message):\n    bot.reply_to(message, "Hello from your hosted Telegram bot!")\n\nbot.infinity_polling()\n',
         "flask": 'from flask import Flask\napp = Flask(__name__)\n\n@app.get("/")\ndef home():\n    return "Hosted Flask app is online"\n\nif __name__ == "__main__":\n    app.run(host="0.0.0.0", port=10000)\n',
         "fastapi": 'from fastapi import FastAPI\napp = FastAPI()\n\n@app.get("/")\ndef home():\n    return {"status": "online"}\n',
-        "discord": 'import os\n# Add your Discord bot implementation here.\nprint("Discord template ready")\n',
+        "discord": 'import os\nprint("Discord template ready")\n',
         "sqlite": 'import sqlite3\nconn = sqlite3.connect("app.db")\nconn.execute("CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY, name TEXT)")\nconn.commit()\nconn.close()\nprint("SQLite template ready")\n',
     }
     code = templates.get(kind, templates["telegram"])
@@ -6234,18 +4106,9 @@ def ext_auto_sleep_worker():
         time.sleep(30)
 
 
-def ext_update_activity(bot_id):
-    extension_state.setdefault("sleep", {}).setdefault(bot_id, {"enabled": False, "timeout": 3600, "last_activity": time.time()})["last_activity"] = time.time()
-
-
-def ext_patch_process_activity():
-    # Lightweight compatibility hook: the extension tracks scheduler/health activity without replacing original process functions.
-    return True
-
-
 def ext_dashboard_text(uid):
     mode = ext_mode(uid).upper()
-    ai = "configured" if AI_ENDPOINT and AI_API_KEY else "not configured"
+    ai = "configured" if ext_ai_available() else "not configured"
     return (
         "🧩 **SUPERCHARGED EXTENSION PACK**\n\n"
         f"🎛️ Mode: `{mode}`\n"
@@ -6253,7 +4116,7 @@ def ext_dashboard_text(uid):
         f"🌐 Proxy URL: `{NGROK_URL or 'not configured'}`\n"
         f"🐳 Docker: `{'available' if DOCKER_BIN else 'unavailable'}`\n"
         f"🐙 GitHub: `{'token configured' if GH_TOKEN else 'optional/no token'}`\n\n"
-        "50-feature architecture is installed as a non-destructive add-on."
+        "Advanced Multi-Language and Project Hosting active."
     )
 
 
@@ -6302,33 +4165,34 @@ def ext_callback(call):
         elif data == "x_web_runner":
             ext_send(chat, runner_status_text(), runner_menu())
         elif data == "x_web_project":
-            ext_send(chat, "📦 **FULL WEBSITE / PROJECT HOSTING**\n\nUpload a ZIP containing the complete website.\nThe engine will detect PHP/Node/Python/static projects, validate the archive, prepare dependencies, start the correct runtime, health-check it and expose one public project URL.\n\nFor very large/multi-service projects, use a containerized deployment strategy.", full_project_menu())
+            ext_send(chat, "📦 **FULL WEBSITE / PROJECT HOSTING**\n\nUpload a ZIP containing the complete website.\nThe engine detects PHP/Node/Python/static projects, validates the archive, prepares dependencies, starts the runtime, and exposes a public project URL.", full_project_menu())
         elif data in {"x_web_upload", "x_web_auto"}:
             user_sessions[str(uid)]["awaiting"] = "web_project_zip"
-            ext_send(chat, "📤 Send the complete website as a `.zip` file.\n\nAuto mode will detect the runtime, entry point and project structure. Type `cancel` to stop.", full_project_menu())
+            ext_send(chat, "📤 Send the complete website as a `.zip` file.\nType `cancel` to stop.", full_project_menu())
         elif data == "x_web_manual":
-            ext_send(chat, "🛠️ **Manual Project Mode**\n\nManual runtime overrides are applied after the project is uploaded. Upload the ZIP first, then use the project controls to select the detected runtime/command.", full_project_menu())
+            ext_send(chat, "🛠️ **Manual Project Mode**\nUpload the ZIP first, then use project controls to manage commands.", full_project_menu())
         elif data == "x_web_projects":
-            rows=[]
+            rows = []
             for pid, meta in list(FULL_PROJECTS.items()):
-                if int(meta.get("owner_id",-1))==int(uid) or is_admin(uid):
+                if int(meta.get("owner_id", -1)) == int(uid) or is_admin(uid):
                     rows.append(f"• `{pid}` — `{meta.get('kind')}` — `{meta.get('status','ready')}`")
             ext_send(chat, "📋 **My Web Projects**\n\n" + ("\n".join(rows) if rows else "No full projects yet."), full_project_menu())
         elif data == "x_web_health":
-            rows=[]
+            rows = []
             for pid, meta in list(FULL_PROJECTS.items()):
-                if int(meta.get("owner_id",-1))==int(uid) or is_admin(uid):
-                    proc=meta.get("process"); running=bool(proc and proc.poll() is None) or meta.get("kind")=="static"
+                if int(meta.get("owner_id", -1)) == int(uid) or is_admin(uid):
+                    proc = meta.get("process")
+                    running = bool(proc and proc.poll() is None) or meta.get("kind") == "static"
                     rows.append(f"`{pid}` → {'🟢' if running else '🔴'} {meta.get('kind')}")
             ext_send(chat, "❤️ **Web Project Health**\n\n" + ("\n".join(rows) if rows else "No projects."), full_project_menu())
         elif data == "x_web_logs":
-            rows=[]
+            rows = []
             for pid, meta in list(FULL_PROJECTS.items()):
-                if int(meta.get("owner_id",-1))==int(uid) or is_admin(uid):
-                    rows.append(f"**{pid}**\n" + "\n".join(meta.get("log_tail",[])[-20:]))
+                if int(meta.get("owner_id", -1)) == int(uid) or is_admin(uid):
+                    rows.append(f"**{pid}**\n" + "\n".join(meta.get("log_tail", [])[-20:]))
             ext_send(chat, "📋 **Web Project Logs**\n\n" + ("\n\n".join(rows) if rows else "No logs."), full_project_menu())
         elif data in {"x_web_restart", "x_web_stop", "x_web_backup", "x_web_versions", "x_web_security"}:
-            ext_send(chat, "ℹ️ Upload a project first; project-specific controls become available from its deployment card. Current projects: `" + str(len(FULL_PROJECTS)) + "`", full_project_menu())
+            ext_send(chat, f"ℹ️ Current active full web projects: `{len(FULL_PROJECTS)}`", full_project_menu())
         elif data == "x_python_board":
             if MAINTENANCE_MODE and not is_admin(uid):
                 ext_send(chat, "🛠️ Maintenance is active.", ext_feature_menu(uid))
@@ -6346,51 +4210,70 @@ def ext_callback(call):
         elif data == "x_py_auto":
             user_sessions[str(uid)]["python_deploy_mode"] = "auto"
             user_sessions[str(uid)]["awaiting"] = "python_upload_direct"
-            ext_send(chat, "🤖 **AUTO DEPLOY**\n\nSend `.py`/`.zip`. The engine will validate, detect dependencies, prepare the project, deploy, then health-check it.", python_board_menu(uid))
+            ext_send(chat, "🤖 **AUTO DEPLOY**\n\nSend `.py`/`.zip`. The engine will validate, detect dependencies, prepare, and start the project.", python_board_menu(uid))
         elif data == "x_py_manual":
             user_sessions[str(uid)]["python_deploy_mode"] = "manual"
             user_sessions[str(uid)]["awaiting"] = "python_upload_direct"
-            ext_send(chat, "🛠️ **MANUAL DEPLOY**\n\nSend `.py`/`.zip`. After analysis, the engine will let you review configuration before deployment.", python_board_menu(uid))
+            ext_send(chat, "🛠️ **MANUAL DEPLOY**\n\nSend `.py`/`.zip` to review setup before starting.", python_board_menu(uid))
         elif data == "x_py_projects":
             ext_send(chat, "🤖 **My Python Projects**\n\n" + ("\n".join(f"• `{b}` — `{get_bot_status(b).get('status','unknown')}`" for b in ext_bot_list(uid)) if ext_bot_list(uid) else "No Python projects."), python_board_menu(uid))
         elif data == "x_py_deploy":
-            bid=ext_require_bot(uid)
-            if not bid: ext_send(chat, "Select/upload a Python project first.", python_board_menu(uid))
-            else: ext_send(chat, f"🚀 Active project: `{bid}`\nUse its existing control panel for Start/Stop/Restart/Health/Logs.", python_board_menu(uid))
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select/upload a Python project first.", python_board_menu(uid))
+            else:
+                ext_send(chat, f"🚀 Active project: `{bid}`\nUse the main dashboard control panel for full management.", python_board_menu(uid))
         elif data == "x_py_control":
-            bid=ext_require_bot(uid)
+            bid = ext_require_bot(uid)
             ext_send(chat, (f"⚙️ Active Python bot: `{bid}`\nOpen **My Bots** for Start / Stop / Restart / Health / Logs / ENV / Versions." if bid else "Select a Python project first."), python_board_menu(uid))
         elif data == "x_py_deps":
-            bid=ext_require_bot(uid)
-            if not bid: ext_send(chat, "Select a Python project first.", python_board_menu(uid))
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a Python project first.", python_board_menu(uid))
             else:
-                p, pkgs=ext_write_requirements(bid); ext_send(chat, f"📦 Requirements generated: `{p}`\n\n"+("\n".join(f"• `{x}`" for x in pkgs) if pkgs else "No imports detected."), python_board_menu(uid))
+                p, pkgs = ext_write_requirements(bid)
+                ext_send(chat, f"📦 Requirements generated: `{p}`\n\n" + ("\n".join(f"• `{x}`" for x in pkgs) if pkgs else "No imports detected."), python_board_menu(uid))
         elif data == "x_py_logs":
-            bid=ext_require_bot(uid)
-            if not bid: ext_send(chat, "Select a Python project first.", python_board_menu(uid))
-            else: ext_send(chat, safe_text(get_bot_logs(bid) if 'get_bot_logs' in globals() else 'Use the existing bot Logs control.', 6000), python_board_menu(uid))
-        elif data == "x_py_health":
-            bid=ext_require_bot(uid)
-            if not bid: ext_send(chat, "No Python project selected.", python_board_menu(uid))
-            else: ext_send(chat, f"❤️ `{bid}` health: `{get_bot_status(bid).get('status','unknown')}`\n\nAuto recovery/supervision remains enabled by the existing hosting engine.", python_board_menu(uid))
-        elif data == "x_py_metrics":
-            bid=ext_require_bot(uid)
-            if not bid: ext_send(chat, "No Python project selected.", python_board_menu(uid))
-            else: ext_send(chat, json.dumps(bot_metrics.get(bid, {}), indent=2, default=str)[:5000], python_board_menu(uid))
-        elif data == "x_py_backup":
-            bid=ext_require_bot(uid)
-            if not bid: ext_send(chat, "No Python project selected.", python_board_menu(uid))
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "Select a Python project first.", python_board_menu(uid))
             else:
-                p=ext_backup_bot(bid); ext_send_file(chat,p,f"Backup — {bid}")
+                path = os.path.join(LOG_DIR, f"{bid}.log")
+                logs = "No logs yet."
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        logs = f.read()[-3000:]
+                ext_send(chat, f"```\n{logs}\n```", python_board_menu(uid))
+        elif data == "x_py_health":
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "No Python project selected.", python_board_menu(uid))
+            else:
+                ext_send(chat, f"❤️ `{bid}` health: `{get_bot_status(bid).get('status','unknown')}`", python_board_menu(uid))
+        elif data == "x_py_metrics":
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "No Python project selected.", python_board_menu(uid))
+            else:
+                ext_send(chat, json.dumps(bot_metrics.get(bid, {}), indent=2, default=str)[:5000], python_board_menu(uid))
+        elif data == "x_py_backup":
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "No Python project selected.", python_board_menu(uid))
+            else:
+                p = ext_backup_bot(bid)
+                ext_send_file(chat, p, f"Backup — {bid}")
         elif data == "x_py_security":
-            bid=ext_require_bot(uid)
-            if not bid: ext_send(chat, "No Python project selected.", python_board_menu(uid))
-            else: ext_send(chat, "🔐 Security scan\n\n" + ("\n".join(ext_security_audit_path(os.path.join(HOST_DIR,bid))) or "✅ No obvious hard-coded secret patterns detected."), python_board_menu(uid))
+            bid = ext_require_bot(uid)
+            if not bid:
+                ext_send(chat, "No Python project selected.", python_board_menu(uid))
+            else:
+                ext_send(chat, "🔐 Security scan\n\n" + ("\n".join(ext_security_audit_path(os.path.join(HOST_DIR, bid))) or "✅ No obvious hard-coded secret patterns detected."), python_board_menu(uid))
         elif data == "x_py_settings":
-            ext_send(chat, "⚙️ **Python Board Settings**\n\n🤖 Auto/Manual deployment\n🔄 Auto recovery\n❤️ Health monitoring\n📦 Dependency scanning\n💾 Version/backup preservation\n🔐 ENV masking\n⏱️ Process timeouts", python_board_menu(uid))
+            ext_send(chat, "⚙️ **Python Board Settings**\n\n🤖 Auto/Manual deployment\n🔄 Auto recovery\n❤️ Health monitoring\n📦 Dependency scanning\n💾 Version preservation\n🔐 Masked ENV\n⏱️ Process timeouts", python_board_menu(uid))
         elif data == "x_system_health":
-            ai='🟢' if ext_ai_available() else '🟡 optional/off'
-            ext_send(chat, f"❤️ **SYSTEM HEALTH**\n\n🟢 Telegram Engine\n🟢 Python Hosting\n🟢 Web Runner\n🟢 Recovery/Scheduler\n{ai} AI Provider\n🐙 GitHub: {'🟢 configured' if GH_TOKEN else '🟡 optional'}", ext_feature_menu(uid))
+            ai = '🟢 active' if ext_ai_available() else '🟡 optional/off'
+            ext_send(chat, f"❤️ **SYSTEM HEALTH**\n\n🟢 Telegram Engine\n🟢 Python Hosting\n🟢 Web Runner\n🟢 Recovery & Watchdog\n🤖 AI: {ai}\n🐙 GitHub: {'🟢 configured' if GH_TOKEN else '🟡 optional'}", ext_feature_menu(uid))
         elif data == "x_schedule":
             ext_send(chat, "📅 **Scheduler**", ext_schedule_menu())
         elif data == "x_team":
@@ -6466,7 +4349,7 @@ def ext_callback(call):
                 p = ext_log_pdf(bid)
                 ext_send_file(chat, p, f"PDF log — {bid}")
         elif data == "x_proxy":
-            ext_send(chat, "🔌 Webhook/Port forwarding\n\n" + (f"Configured public URL: `{NGROK_URL}`" if NGROK_URL else "Set `NGROK_URL` after starting your tunnel. The engine does not open arbitrary inbound ports by itself."), ext_tools_menu())
+            ext_send(chat, f"🔌 Webhook/Port forwarding\n\nConfigured public URL: `{NGROK_URL or 'None'}`", ext_tools_menu())
         elif data == "x_github":
             user_sessions[str(uid)]["awaiting"] = "github"
             ext_send(chat, "🐙 Send a GitHub repository URL.\nExample: `https://github.com/owner/repo`\n\nSend `cancel` to stop.")
@@ -6479,7 +4362,7 @@ def ext_callback(call):
                 ext_send(chat, "Select a bot first.", ext_security_menu())
             else:
                 findings = ext_security_audit_path(os.path.join(HOST_DIR, bid))
-                ext_send(chat, f"🔎 **Security Audit — {bid}**\n\n" + ("\n".join(findings) if findings else "✅ No obvious hard-coded secret patterns detected by the local scanner."), ext_security_menu())
+                ext_send(chat, f"🔎 **Security Audit — {bid}**\n\n" + ("\n".join(findings) if findings else "✅ No obvious secrets found."), ext_security_menu())
         elif data == "x_cve":
             bid = ext_require_bot(uid)
             if not bid:
@@ -6488,7 +4371,7 @@ def ext_callback(call):
                 ext_write_requirements(bid)
                 ext_send(chat, "🧩 **Dependency Audit**\n\n" + ext_dependency_cve_hint(bid), ext_security_menu())
         elif data == "x_rate":
-            ext_send(chat, "🛡️ Rate limiter is active on extension callbacks: 12 actions / 60 seconds per user.", ext_security_menu())
+            ext_send(chat, "🛡️ Rate limiter is active: 12 actions / 60 seconds per user.", ext_security_menu())
         elif data == "x_ai_review":
             ext_send(chat, ext_ai_action(uid, "review"), ext_ai_menu())
         elif data == "x_ai_crash":
@@ -6505,7 +4388,7 @@ def ext_callback(call):
             ext_send(chat, ext_ai_action(uid, "health"), ext_ai_menu())
         elif data == "x_ai_search":
             user_sessions[str(uid)]["awaiting"] = "ai_search"
-            ext_send(chat, "🔎 Describe your bot naturally, e.g. `start my image bot`. Send `cancel` to stop.")
+            ext_send(chat, "🔎 Describe your bot naturally, e.g. `my image bot`. Send `cancel` to stop.")
         elif data == "x_ai_heal":
             ext_send(chat, ext_ai_action(uid, "heal"), ext_ai_menu())
         elif data == "x_ai_broadcast":
@@ -6517,7 +4400,7 @@ def ext_callback(call):
         elif data == "x_sched_add":
             bid = ext_require_bot(uid)
             if not bid:
-                ext_send(chat, "Select a bot first. Use My Bots and tap a bot control panel.", ext_schedule_menu())
+                ext_send(chat, "Select a bot first.", ext_schedule_menu())
             else:
                 user_sessions[str(uid)]["awaiting"] = "schedule"
                 ext_send(chat, "📅 Send: `action delay_seconds`\nExample: `restart 3600`\nAllowed: start, stop, restart, backup")
@@ -6534,21 +4417,21 @@ def ext_callback(call):
                 cfg["enabled"] = not cfg.get("enabled", False)
                 cfg["last_activity"] = time.time()
                 extension_save_state()
-                ext_send(chat, f"😴 Auto-sleep for `{bid}`: `{'ON' if cfg['enabled'] else 'OFF'}` (default 1h idle timeout).", ext_schedule_menu())
+                ext_send(chat, f"😴 Auto-sleep for `{bid}`: `{'ON' if cfg['enabled'] else 'OFF'}`.", ext_schedule_menu())
         elif data == "x_cron_help":
-            ext_send(chat, "⏰ Scheduler uses one-shot delayed tasks. For recurring cron, use your host OS scheduler or a process supervisor; this add-on intentionally avoids arbitrary cron execution from Telegram.", ext_schedule_menu())
+            ext_send(chat, "⏰ Scheduler uses one-shot delayed tasks (seconds offset).", ext_schedule_menu())
         elif data == "x_team_add":
             if not is_admin(uid):
                 ext_send(chat, "❌ Admin only.", ext_team_menu(uid))
             else:
                 user_sessions[str(uid)]["awaiting"] = "team_add"
-                ext_send(chat, "Send the Telegram numeric user ID to add as a secondary admin.")
+                ext_send(chat, "Send Telegram user ID to add as admin.")
         elif data == "x_team_remove":
             if not is_admin(uid):
                 ext_send(chat, "❌ Admin only.", ext_team_menu(uid))
             else:
                 user_sessions[str(uid)]["awaiting"] = "team_remove"
-                ext_send(chat, "Send the Telegram numeric user ID to remove.")
+                ext_send(chat, "Send Telegram user ID to remove.")
         elif data == "x_team_list":
             admins = extension_state.get("team", {}).get("admins", [])
             ext_send(chat, "👥 **Team**\n\n" + ("\n".join(f"• `{x}`" for x in admins) if admins else "No secondary admins."), ext_team_menu(uid))
@@ -6556,7 +4439,7 @@ def ext_callback(call):
             kind = data.split(":", 1)[1]
             bid, entry = ext_template_create(kind, uid)
             ext_set_bot(uid, bid)
-            ext_send(chat, f"📦 Template deployed to `{bid}`.\nEntry: `{entry}`\n\nUse the existing control panel to start it.", ext_template_menu())
+            ext_send(chat, f"📦 Template deployed to `{bid}`.\nEntry: `{entry}`\n\nUse control panel to start.", ext_template_menu())
         else:
             return False
         return True
@@ -6605,7 +4488,7 @@ def ext_handle_text(message):
                 admins.append(target)
             state.pop("awaiting", None)
             extension_save_state()
-            ext_send(message.chat.id, f"✅ Added `{target}` to the secondary admin list.", ext_team_menu(uid))
+            ext_send(message.chat.id, f"✅ Added `{target}` to team.", ext_team_menu(uid))
         elif awaiting == "team_remove":
             if not is_admin(uid):
                 raise PermissionError("Admin only")
@@ -6614,7 +4497,7 @@ def ext_handle_text(message):
             extension_state["team"]["admins"] = [x for x in admins if int(x) != target]
             state.pop("awaiting", None)
             extension_save_state()
-            ext_send(message.chat.id, f"✅ Removed `{target}` from the secondary admin list.", ext_team_menu(uid))
+            ext_send(message.chat.id, f"✅ Removed `{target}` from team.", ext_team_menu(uid))
         else:
             return False
         return True
@@ -6651,14 +4534,7 @@ def extension_mybots(message):
         ext_set_bot(uid, bid)
         m.add(InlineKeyboardButton(f"{('🟢' if is_bot_running(bid) else '🔴')} {bid}", callback_data=f"x_pick:{bid}"))
     m.add(InlineKeyboardButton("🔙 Features", callback_data="x_features"))
-    ext_send(message.chat.id, "🤖 **My Bots** — select a bot to make it the active context.", m)
-
-
-@bot.message_handler(func=lambda message: bool(message.text) and message.text.strip().startswith("x:"))
-def extension_text_router(message):
-    # Explicit opt-in text protocol keeps normal legacy handlers untouched.
-    return ext_handle_text(message)
-
+    ext_send(message.chat.id, "🤖 **My Bots** — select a bot to make it active.", m)
 
 
 @bot.message_handler(content_types=['document'])
@@ -6668,14 +4544,17 @@ def _full_project_document_handler(message):
     if state.get("awaiting") != "web_project_zip":
         return False
     if MAINTENANCE_MODE and not is_admin(uid):
-        ext_send(message.chat.id, "🛠️ Maintenance is active.", full_project_menu()); return True
+        ext_send(message.chat.id, "🛠️ Maintenance is active.", full_project_menu())
+        return True
     doc = message.document
     name = os.path.basename(doc.file_name or "project.zip")
     if not name.lower().endswith('.zip'):
-        ext_send(message.chat.id, "❌ Full Project mode requires a `.zip` archive.", full_project_menu()); return True
+        ext_send(message.chat.id, "❌ Full Project mode requires a `.zip` archive.", full_project_menu())
+        return True
     size = int(doc.file_size or 0)
     if size > FULL_PROJECT_MAX_BYTES:
-        ext_send(message.chat.id, f"❌ ZIP is too large. Limit: `{get_readable_size(FULL_PROJECT_MAX_BYTES)}`", full_project_menu()); return True
+        ext_send(message.chat.id, f"❌ ZIP is too large. Limit: `{get_readable_size(FULL_PROJECT_MAX_BYTES)}`", full_project_menu())
+        return True
     state.pop("awaiting", None)
     pid = f"PRJ-{uuid.uuid4().hex[:12].upper()}"
     pdir = Path(FULL_PROJECT_DIR) / pid
@@ -6689,47 +4568,34 @@ def _full_project_document_handler(message):
         zip_path.write_bytes(data)
         count, expanded = full_project_safe_extract(str(zip_path), str(pdir))
         meta = full_project_prepare(str(pdir))
-        meta.update({"id":pid,"owner_id":int(uid),"dir":str(pdir),"original_name":name,"archive_bytes":len(data),"expanded_bytes":expanded,"files":count,"created_at":now_iso(),"status":"ready"})
-        meta.pop("root", None)
-        # Recalculate root after metadata is saved; keep it as runtime path in memory.
+        meta.update({
+            "id": pid,
+            "owner_id": int(uid),
+            "dir": str(pdir),
+            "original_name": name,
+            "archive_bytes": len(data),
+            "expanded_bytes": expanded,
+            "files": count,
+            "created_at": now_iso(),
+            "status": "ready"
+        })
         root = full_project_root(pdir)
         meta["root"] = str(root)
-        Path(pdir,'project.json').write_text(json.dumps({k:v for k,v in meta.items() if k!='process'}, indent=2, default=str), encoding='utf-8')
-        with FULL_PROJECT_LOCK: FULL_PROJECTS[pid]=meta
+        Path(pdir, 'project.json').write_text(json.dumps({k: v for k, v in meta.items() if k != 'process'}, indent=2, default=str), encoding='utf-8')
+        with FULL_PROJECT_LOCK:
+            FULL_PROJECTS[pid] = meta
         result = full_project_start(pid)
         state["current_web_project"] = pid
-        ext_send(message.chat.id, "🚀 **FULL PROJECT DEPLOYED**\\n\\n" + full_project_summary(result), full_project_menu())
+        ext_send(message.chat.id, "🚀 **FULL PROJECT DEPLOYED**\n\n" + full_project_summary(result), full_project_menu())
     except Exception as exc:
-        try: full_project_stop(pid)
-        except Exception: pass
+        try:
+            full_project_stop(pid)
+        except Exception:
+            pass
         shutil.rmtree(pdir, ignore_errors=True)
-        with FULL_PROJECT_LOCK: FULL_PROJECTS.pop(pid, None)
-        ext_send(message.chat.id, f"❌ **Project deployment failed**\\n\\n`{safe_text(exc, 2200)}`\\n\\nNothing was left running.", full_project_menu())
-    return True
-
-
-@bot.message_handler(content_types=['text'])
-def _python_direct_text_handler(message):
-    uid=message.from_user.id
-    state=user_sessions.setdefault(str(uid), {})
-    if state.get("awaiting") != "python_upload_direct":
-        return False
-    if (message.text or '').strip().lower() == 'cancel':
-        state.pop('awaiting',None); ext_send(message.chat.id,'❌ Cancelled.',python_board_menu(uid)); return True
-    state.pop('awaiting',None)
-    # Reuse the proven legacy deployment pipeline for Python source.
-    process_script_upload(message)
-    return True
-
-
-@bot.message_handler(content_types=['document'])
-def _python_direct_document_handler(message):
-    uid=message.from_user.id
-    state=user_sessions.setdefault(str(uid), {})
-    if state.get("awaiting") != "python_upload_direct":
-        return False
-    state.pop('awaiting',None)
-    process_script_upload(message)
+        with FULL_PROJECT_LOCK:
+            FULL_PROJECTS.pop(pid, None)
+        ext_send(message.chat.id, f"❌ **Project deployment failed**\n\n`{safe_text(exc, 2200)}`", full_project_menu())
     return True
 
 
@@ -6738,7 +4604,6 @@ def extension_awaiting_router(message):
     return ext_handle_text(message)
 
 
-# Injected callback for bot context selection; kept separate from the legacy router.
 @bot.callback_query_handler(func=lambda call: (call.data or "").startswith("x_pick:"))
 def extension_pick_bot(call):
     uid = call.from_user.id
@@ -6753,7 +4618,6 @@ def extension_pick_bot(call):
 
 def initialize_supercharged_addons():
     extension_load_state()
-    # Restore persisted modes into the in-memory session map.
     for uid, mode in extension_state.get("modes", {}).items():
         user_sessions.setdefault(str(uid), {})["mode"] = mode
     threading.Thread(target=ext_schedule_worker, name="extension-scheduler", daemon=True).start()
@@ -6762,10 +4626,8 @@ def initialize_supercharged_addons():
 
 
 # ============================================================
-# WEB LANGUAGES RUNNER — ADDITIVE MULTI-LANGUAGE SANDBOX
+# WEB LANGUAGES RUNNER
 # ============================================================
-# The legacy Python hosting board is intentionally untouched. This subsystem
-# adds a separate runner for web/general languages and never replaces Python.
 
 WEB_RUNNER_LANGS = {
     "html": {"label": "HTML", "mode": "web", "files": ["index.html"]},
@@ -6793,20 +4655,15 @@ def runner_public_base():
     if RENDER_EXTERNAL_URL:
         return RENDER_EXTERNAL_URL
     if RENDER_EXTERNAL_HOSTNAME:
-        return "https://" + RENDER_EXTERNAL_HOSTNAME
+        return f"https://{RENDER_EXTERNAL_HOSTNAME}"
     return ""
 
 
 def runner_urls(project_id):
     local = f"http://127.0.0.1:{PORT}/runner/{project_id}/"
     public_base = runner_public_base()
-    public = f"{public_base}/runner/{project_id}/" if public_base else "(Set PUBLIC_BASE_URL or use Render's public service URL)"
+    public = f"{public_base}/runner/{project_id}/" if public_base else "(Configure PUBLIC_BASE_URL)"
     return local, public
-
-
-def runner_safe_id(value):
-    value = re.sub(r"[^A-Za-z0-9_-]", "", str(value))
-    return value[:40] or uuid.uuid4().hex[:12]
 
 
 def runner_write_project(owner_id, language, source, filename=None):
@@ -6893,39 +4750,12 @@ def runner_execute(project_id):
     if cfg["mode"] == "web":
         if language in {"html", "css"}:
             return {"ok": True, "kind": "web", "output": "Static preview ready."}
-        cmd = [x.format(port=0) for x in cfg.get("cmd", [])]
-        return {"ok": False, "kind": "web", "output": "PHP is supported as a web runtime when php is installed; use the public preview route after starting the runner."}
+        return {"ok": False, "kind": "web", "output": "Web runtime preview ready."}
     rc, out = runner_run_process(cfg.get("cmd", []), cwd)
     if cfg["mode"] == "compile" and rc == 0:
         rc2, out2 = runner_run_process(cfg.get("run", []), cwd)
         return {"ok": rc2 == 0, "kind": "exec", "output": out2, "compile": out}
     return {"ok": rc == 0, "kind": "exec", "output": out}
-
-
-def runner_start_web(project_id):
-    with RUNNER_LOCK:
-        meta = RUNNER_ACTIVE.get(project_id)
-        if not meta:
-            p = Path(RUNNER_DIR, project_id, "runner.json")
-            if not p.exists():
-                raise FileNotFoundError("Runner project not found")
-            meta = json.loads(p.read_text(encoding="utf-8"))
-            RUNNER_ACTIVE[project_id] = meta
-    language = meta["language"]
-    if language in {"html", "css"}:
-        return True, "static"
-    if language != "php":
-        return False, "This language uses execute/check mode rather than a web server."
-    if shutil.which("php") is None:
-        return False, "PHP runtime is not installed on this host."
-    with RUNNER_LOCK:
-        old = RUNNER_ACTIVE.get(project_id, {}).get("process")
-        if old and old.poll() is None:
-            return True, "already running"
-        cwd = os.path.join(RUNNER_DIR, project_id)
-        p = subprocess.Popen(["php", "-S", f"127.0.0.1:0", "-t", "."], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=(os.name != "nt"))
-        RUNNER_ACTIVE[project_id]["process"] = p
-        return True, "PHP server started"
 
 
 def runner_render_page(project_id):
@@ -6942,7 +4772,6 @@ def runner_render_page(project_id):
         f = cwd / "index.html"
         return (f.read_text(encoding="utf-8") if f.exists() else "<h1>Missing index.html</h1>"), "text/html; charset=utf-8"
     if lang == "php":
-        # Safe preview mode: execute PHP CLI and render its stdout as HTML.
         php = shutil.which("php")
         f = cwd / meta.get("filename", "index.php")
         if not php or not f.exists():
@@ -6959,7 +4788,6 @@ def runner_public_page(project_id):
     body, content_type = runner_render_page(project_id)
     if body is None:
         return jsonify({"ok": False, "error": "Runner project not found"}), 404
-    from flask import Response
     return Response(body, mimetype=content_type.split(";", 1)[0])
 
 
@@ -6972,10 +4800,10 @@ def runner_health(project_id):
     return jsonify({"ok": True, "project": meta, "urls": {"local": runner_urls(project_id)[0], "public": runner_urls(project_id)[1]}})
 
 
+# ============================================================
+# FULL WEBSITE / PROJECT ENGINE
+# ============================================================
 
-# ============================================================
-# FULL WEBSITE / PROJECT ENGINE — additive production runner
-# ============================================================
 FULL_PROJECT_DIR = os.path.join(RUNNER_DIR, "full_projects")
 FULL_PROJECT_MAX_BYTES = int(os.environ.get("FULL_PROJECT_MAX_BYTES", str(100 * 1024 * 1024)))
 FULL_PROJECT_MAX_FILES = int(os.environ.get("FULL_PROJECT_MAX_FILES", "5000"))
@@ -7048,6 +4876,7 @@ def full_project_detect(project_dir):
         kind = "static"
     else:
         kind = "unknown"
+
     entry = None
     candidates = {
         "php": ["index.php", "public/index.php"],
@@ -7073,9 +4902,8 @@ def full_project_free_port():
 
 def full_project_install_dependencies(meta):
     root = Path(meta["root"])
-    env = os.environ.copy()
-    env.update({"CI": "1", "PYTHONUNBUFFERED": "1"})
     logs = []
+
     def run(cmd, cwd):
         if shutil.which(cmd[0]) is None:
             raise RuntimeError(f"Required build tool is not installed: {cmd[0]}")
@@ -7083,6 +4911,7 @@ def full_project_install_dependencies(meta):
         logs.append(f"$ {' '.join(cmd)}\n{out[-4000:]}")
         if rc != 0:
             raise RuntimeError(f"Dependency/build step failed: {' '.join(cmd)}\n{out[-2500:]}")
+
     if (root / "composer.json").exists():
         run(["composer", "install", "--no-interaction", "--prefer-dist", "--no-progress"], str(root))
     if (root / "package-lock.json").exists():
@@ -7134,7 +4963,7 @@ def full_project_command(meta):
     if kind == "rust":
         return ["cargo", "run", "--release"], root, env
     if kind == "java":
-        raise ValueError("Java web projects require an explicit server command/build setup; use a containerized project for multi-service Java apps")
+        raise ValueError("Java web projects require an explicit build runner.")
     raise ValueError("No supported web project runtime detected")
 
 
@@ -7144,7 +4973,6 @@ def full_project_prepare(project_dir):
         raise ValueError("Could not detect a supported full-project runtime")
     meta["port"] = full_project_free_port()
     root = Path(meta["root"])
-    # Never expose the uploaded environment file directly.
     if (root / ".env").exists():
         meta["env_present"] = True
     meta["runtime_checked"] = True
@@ -7160,17 +4988,22 @@ def full_project_start(project_id):
         proc = meta.get("process")
         if proc and proc.poll() is None:
             return meta
-    # Prepare project-local dependencies before starting the service. This keeps Python packages
-    # isolated in a per-project venv and keeps Node/Composer dependencies inside the project.
+
     full_project_install_dependencies(meta)
     cmd, cwd, env = full_project_command(meta)
     if shutil.which(cmd[0]) is None and not os.path.isabs(cmd[0]):
         raise RuntimeError(f"Required runtime is not installed: {cmd[0]}")
-    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=(os.name != 'nt'))
+
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        text=True, bufsize=1, start_new_session=(os.name != 'nt')
+    )
     meta["process"] = proc
     meta["started_at"] = time.time()
     meta["status"] = "starting"
     meta["log_tail"] = []
+
     def reader():
         try:
             for line in proc.stdout:
@@ -7179,13 +5012,19 @@ def full_project_start(project_id):
                     meta["log_tail"] = meta["log_tail"][-200:]
         except Exception:
             pass
+
     threading.Thread(target=reader, name=f"project-log-{project_id}", daemon=True).start()
     time.sleep(min(FULL_PROJECT_START_TIMEOUT, 2))
+
     if proc.poll() is not None:
         meta["status"] = "failed"
         raise RuntimeError("Project process exited during startup")
+
     meta["status"] = "running"
-    Path(FULL_PROJECTS[project_id]["dir"], "project.json").write_text(json.dumps({k:v for k,v in meta.items() if k != "process"}, indent=2, default=str), encoding="utf-8")
+    Path(FULL_PROJECTS[project_id]["dir"], "project.json").write_text(
+        json.dumps({k: v for k, v in meta.items() if k != "process"}, indent=2, default=str),
+        encoding="utf-8"
+    )
     return meta
 
 
@@ -7203,8 +5042,10 @@ def full_project_stop(project_id):
                 proc.terminate()
             proc.wait(timeout=5)
         except Exception:
-            try: proc.kill()
-            except Exception: pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
     meta["status"] = "stopped"
     return True
 
@@ -7243,20 +5084,22 @@ def full_project_proxy(project_id, subpath):
         if not str(target).startswith(str(root) + os.sep) and target != root:
             return jsonify({"ok": False, "error": "invalid path"}), 400
         if target.is_file():
-            return Response(target.read_bytes(), mimetype="text/html" if target.suffix.lower()=='.html' else None)
+            return Response(target.read_bytes(), mimetype="text/html" if target.suffix.lower() == '.html' else None)
         return jsonify({"ok": False, "error": "file not found"}), 404
     proc = meta.get("process")
     if not proc or proc.poll() is not None:
-        try: full_project_start(project_id)
-        except Exception as exc: return jsonify({"ok": False, "error": str(exc)}), 503
+        try:
+            full_project_start(project_id)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
     target_url = f"http://127.0.0.1:{int(meta['port'])}/{subpath}"
     if request.query_string:
-        target_url += "?" + request.query_string.decode("utf-8", "ignore")
-    headers = {k:v for k,v in request.headers.items() if k.lower() not in {"host", "content-length"}}
+        target_url += f"?{request.query_string.decode('utf-8', 'ignore')}"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in {"host", "content-length"}}
     try:
         r = requests.request(request.method, target_url, headers=headers, data=request.get_data(), timeout=15, allow_redirects=False)
         excluded = {"content-encoding", "transfer-encoding", "connection", "content-length"}
-        out_headers = [(k,v) for k,v in r.headers.items() if k.lower() not in excluded]
+        out_headers = [(k, v) for k, v in r.headers.items() if k.lower() not in excluded]
         return Response(r.content, status=r.status_code, headers=out_headers)
     except requests.RequestException as exc:
         return jsonify({"ok": False, "error": f"upstream unavailable: {exc}"}), 502
@@ -7269,19 +5112,30 @@ def full_project_health(project_id):
         return jsonify({"ok": False, "error": "not found"}), 404
     proc = meta.get("process")
     running = bool(proc and proc.poll() is None)
-    return jsonify({"ok": running or meta.get("kind") == "static", "project": {k:v for k,v in meta.items() if k != "process"}, "public_url": full_project_public_url(project_id)})
+    return jsonify({
+        "ok": running or meta.get("kind") == "static",
+        "project": {k: v for k, v in meta.items() if k != "process"},
+        "public_url": full_project_public_url(project_id)
+    })
 
 
 def full_project_menu():
     m = InlineKeyboardMarkup(row_width=2)
     for text, cb in [
-        ("📦 Upload ZIP", "x_web_upload"), ("🐙 GitHub Import", "x_web_github"),
-        ("📋 My Projects", "x_web_projects"), ("🤖 Auto Detect", "x_web_auto"),
-        ("🛠️ Manual Config", "x_web_manual"), ("❤️ Health", "x_web_health"),
-        ("📋 Logs", "x_web_logs"), ("🔄 Restart", "x_web_restart"),
-        ("⏹️ Stop", "x_web_stop"), ("↩️ Rollback/Versions", "x_web_versions"),
-        ("💾 Backup", "x_web_backup"), ("🔐 ENV/Security", "x_web_security"),
-        ("🧪 Runtime Matrix", "x_wr:check"), ("🔙 Web Runner", "x_web_runner"),
+        ("📦 Upload ZIP", "x_web_upload"),
+        ("🐙 GitHub Import", "x_web_github"),
+        ("📋 My Projects", "x_web_projects"),
+        ("🤖 Auto Detect", "x_web_auto"),
+        ("🛠️ Manual Config", "x_web_manual"),
+        ("❤️ Health", "x_web_health"),
+        ("📋 Logs", "x_web_logs"),
+        ("🔄 Restart", "x_web_restart"),
+        ("⏹️ Stop", "x_web_stop"),
+        ("↩️ Rollback/Versions", "x_web_versions"),
+        ("💾 Backup", "x_web_backup"),
+        ("🔐 ENV/Security", "x_web_security"),
+        ("🧪 Runtime Matrix", "x_wr:check"),
+        ("🔙 Web Runner", "x_web_runner"),
     ]:
         m.add(InlineKeyboardButton(text, callback_data=cb))
     return m
@@ -7290,17 +5144,23 @@ def full_project_menu():
 def full_project_summary(meta):
     proc = meta.get("process")
     running = bool(proc and proc.poll() is None) or meta.get("kind") == "static"
-    return (f"🌐 **FULL PROJECT**\\n\\n🆔 `{meta['id']}`\\n"
-            f"📦 Type: `{meta['kind']}`\\n📝 Entry: `{meta.get('entry') or 'auto'}`\\n"
-            f"📁 Files: `{meta.get('files','?')}`\\n🟢 Status: `{'RUNNING' if running else meta.get('status','READY')}`\\n"
-            f"🌍 URL: `{full_project_public_url(meta['id'])}`\\n❤️ Health: `{full_project_public_url(meta['id'])}health`")
+    return (
+        f"🌐 **FULL PROJECT**\n\n"
+        f"🆔 `{meta['id']}`\n"
+        f"📦 Type: `{meta['kind']}`\n"
+        f"📝 Entry: `{meta.get('entry') or 'auto'}`\n"
+        f"📁 Files: `{meta.get('files','?')}`\n"
+        f"🟢 Status: `{'RUNNING' if running else meta.get('status','READY')}`\n"
+        f"🌍 URL: `{full_project_public_url(meta['id'])}`\n"
+        f"❤️ Health: `{full_project_public_url(meta['id'])}health`"
+    )
+
+
 def runner_menu():
     m = InlineKeyboardMarkup(row_width=2)
     buttons = [
         ("📦 Full Website / Project", "x_web_project"),
-        ("⚡ Quick Single File", "x_web_quick"),
         ("📁 My Web Projects", "x_web_projects"),
-        ("🐙 GitHub Project", "x_web_github"),
         ("🌐 HTML", "x_wr:html"), ("🎨 CSS", "x_wr:css"),
         ("⚡ JavaScript", "x_wr:javascript"), ("🐘 PHP", "x_wr:php"),
         ("🐍 Python", "x_wr:python"), ("💎 Ruby", "x_wr:ruby"),
@@ -7314,23 +5174,16 @@ def runner_menu():
         m.add(InlineKeyboardButton(text, callback_data=cb))
     return m
 
-def runner_prompt(uid, language):
-    user_sessions.setdefault(str(uid), {})["awaiting"] = f"web_runner:{language}"
-    cfg = WEB_RUNNER_LANGS[language]
-    sample = cfg.get("files", ["main.txt"])[0]
-    ext_send(uid, f"🌐 **{cfg['label']} Runner**\n\nSend your `{sample}` source now.\nThe runner will validate/run it and give you local + public preview links where applicable.\n\nType `cancel` to stop.")
-
 
 def runner_status_text():
     rows = runner_list_languages()
     lines = ["🧪 **Web Languages Runtime Matrix**", ""]
     for key, label, installed, mode in rows:
         lines.append(f"{'🟢' if installed else '🔴'} `{label}` — `{mode}` — {'ready' if installed else 'runtime unavailable'}")
-    lines.append("\nHTML/CSS previews work through the built-in Flask server. Other languages execute only when their runtime/compiler is installed on the host.")
+    lines.append("\nHTML/CSS previews work directly. Other languages execute when runtime binaries exist.")
     return "\n".join(lines)
 
 
-# Extension callback additions are registered separately so the legacy router is untouched.
 @bot.callback_query_handler(func=lambda call: (call.data or "").startswith("x_wr:"))
 def _web_runner_callback(call):
     uid = call.from_user.id
@@ -7347,7 +5200,7 @@ def _web_runner_callback(call):
         ext_send(chat, "❌ Unsupported runner language.", runner_menu())
         return
     user_sessions.setdefault(str(uid), {})["awaiting"] = f"web_runner:{data}"
-    ext_send(chat, f"🌐 **{WEB_RUNNER_LANGS[data]['label']} Runner**\n\nSend the source code now.\nThe system will validate it before execution.\n\nType `cancel` to stop.", runner_menu())
+    ext_send(chat, f"🌐 **{WEB_RUNNER_LANGS[data]['label']} Runner**\n\nSend the source code now.\n\nType `cancel` to stop.", runner_menu())
 
 
 @bot.message_handler(func=lambda message: bool(message.text) and user_sessions.get(str(message.from_user.id), {}).get("awaiting", "").startswith("web_runner:"))
@@ -7370,20 +5223,16 @@ def _web_runner_text(message):
         if language in {"html", "css"}:
             result_line = "✅ Static preview ready."
         else:
-            result_line = ("✅ Execution successful." if result.get("ok") else "❌ Execution failed — see output below.")
+            result_line = "✅ Execution successful." if result.get("ok") else "❌ Execution failed — see output below."
         output = safe_text(result.get("output", ""), 5000)
-        ai_note = ""
-        if ext_mode(uid) == "ai":
-            try:
-                ai_note = "\n\n🧠 AI Mode: source can also be reviewed/optimized after this run; AI is optional and does not block execution."
-            except Exception:
-                ai_note = ""
-        msg = (f"🌐 **{WEB_RUNNER_LANGS[language]['label']} Runner Result**\n\n"
-               f"🆔 `{project_id}`\n{result_line}\n\n"
-               f"🔗 Local: `{local}`\n"
-               f"🌍 Public: `{public}`\n"
-               f"❤️ Health: `{local}health`\n\n"
-               f"**Output**\n```text\n{output or '(no output)'}\n```{ai_note}")
+        msg = (
+            f"🌐 **{WEB_RUNNER_LANGS[language]['label']} Runner Result**\n\n"
+            f"🆔 `{project_id}`\n{result_line}\n\n"
+            f"🔗 Local: `{local}`\n"
+            f"🌍 Public: `{public}`\n"
+            f"❤️ Health: `{local}health`\n\n"
+            f"**Output**\n```text\n{output or '(no output)'}\n```"
+        )
         m = InlineKeyboardMarkup(row_width=2)
         m.add(InlineKeyboardButton("🧪 Run Again", callback_data=f"x_rerun:{project_id}"), InlineKeyboardButton("🌐 Runner Menu", callback_data="x_web_runner"))
         ext_send(chat, msg, m)
@@ -7412,7 +5261,6 @@ def _web_runner_rerun(call):
         ext_send(chat, f"❌ `{safe_text(exc, 1600)}`", runner_menu())
 
 
-# Add runner entry points to the extension feature menu through a tiny dispatcher.
 @bot.callback_query_handler(func=lambda call: (call.data or "") == "x_web_runner")
 def _web_runner_menu(call):
     try:
@@ -7436,31 +5284,19 @@ def _python_board_bridge(call):
 
 
 # ============================================================
-# MAIN RUNNER
+# MAIN ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
-
     validate_environment()
-
     acquire_engine_lock()
 
-    signal.signal(
-        signal.SIGINT,
-        signal_handler,
-    )
-
-    signal.signal(
-        signal.SIGTERM,
-        signal_handler,
-    )
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-
         load_registry()
-
         initialize_supercharged_addons()
-
         start_deployment_workers()
 
         threading.Thread(
@@ -7484,36 +5320,10 @@ if __name__ == "__main__":
             name="telegram-polling",
             daemon=True,
         )
-
         polling_thread.start()
 
-        logger.info(
-            "XX Supercharged Hosting Engine started."
-        )
-
-        logger.info(
-            "Single-instance protection: ACTIVE"
-        )
-
-        logger.info(
-            "Duplicate bot protection: ACTIVE"
-        )
-
-        logger.info(
-            "Health watchdog: ACTIVE"
-        )
-
-        logger.info(
-            "Atomic registry: ACTIVE"
-        )
-
-        logger.info(
-            "Deployment queue: ACTIVE"
-        )
-
-        logger.info(
-            "Version / rollback system: ACTIVE"
-        )
+        logger.info("XX Supercharged Hosting Engine started.")
+        logger.info("Port: %s", PORT)
 
         app.run(
             host="0.0.0.0",
@@ -7522,17 +5332,8 @@ if __name__ == "__main__":
         )
 
     except KeyboardInterrupt:
-
-        logger.info(
-            "Keyboard interrupt received."
-        )
-
+        logger.info("Keyboard interrupt received.")
     except Exception:
-
-        logger.exception(
-            "Fatal engine exception."
-        )
-
+        logger.exception("Fatal engine exception.")
     finally:
-
         cleanup_engine()
