@@ -10,6 +10,7 @@ import py_compile
 import requests
 import zipfile
 import shutil
+import socket
 import random
 import importlib.util
 import json
@@ -29,7 +30,7 @@ from dataclasses import dataclass, field
 from contextlib import contextmanager
 from typing import Any, Dict, Optional, Tuple, List
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, Response
 import telebot
 from telebot.types import (
     InlineKeyboardMarkup,
@@ -170,6 +171,14 @@ state_lock = threading.RLock()
 
 deployment_queue = queue.Queue()
 deployment_workers = []
+
+# ============================================================
+# PYTHON TOOL RUNNER STATE
+# ============================================================
+# Each runner session is intentionally separate from hosted bot
+# processes so testing a tool never changes the existing bot lifecycle.
+tool_sessions: Dict[str, Dict[str, Any]] = {}
+tool_session_lock = threading.RLock()
 
 ENGINE_LOCK_HANDLE = None
 
@@ -2490,6 +2499,637 @@ def mtproto_upload(
 
 
 # ============================================================
+# PYTHON TOOL RUNNER + TELEGRAM TERMINAL
+# ============================================================
+
+TOOL_MAX_LIVE_CHARS = 7000
+TOOL_EDIT_INTERVAL = 1.2
+TOOL_MAX_RUNTIME = int(os.environ.get("TOOL_MAX_RUNTIME", "86400"))
+TOOL_WEB_PROBE_TIMEOUT = float(os.environ.get("TOOL_WEB_PROBE_TIMEOUT", "8"))
+TOOL_WEB_BASE = os.environ.get("TOOL_WEB_BASE", "").rstrip("/")
+
+
+def tool_runner_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📥 Send Python Tool", callback_data="tool_upload"),
+        InlineKeyboardButton("📚 Active Sessions", callback_data="tool_sessions"),
+        InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"),
+    )
+    return markup
+
+
+def tool_terminal_menu(session_id):
+    session = tool_sessions.get(session_id, {})
+    running = bool(session.get("process") and session["process"].poll() is None)
+    markup = InlineKeyboardMarkup(row_width=2)
+    if session.get("web_url"):
+        markup.add(
+            InlineKeyboardButton("🌐 Open URL", url=session["web_url"]),
+        )
+    if running:
+        markup.add(
+            InlineKeyboardButton("⌨️ Send Input", callback_data=f"tool_ask_input:{session_id}"),
+            InlineKeyboardButton("🛑 Stop", callback_data=f"tool_stop:{session_id}"),
+        )
+        markup.add(
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"tool_refresh:{session_id}"),
+        )
+    markup.add(
+        InlineKeyboardButton("📄 See Output as File", callback_data=f"tool_file:{session_id}"),
+        InlineKeyboardButton("🖥️ Terminal", callback_data=f"tool_terminal:{session_id}"),
+    )
+    markup.add(
+        InlineKeyboardButton("🔄 Restart", callback_data=f"tool_restart:{session_id}"),
+        InlineKeyboardButton("🔙 Tool Runner", callback_data="tool_runner"),
+    )
+    return markup
+
+
+def _tool_extract_buttons(text):
+    """Turn common numbered terminal menus into Telegram buttons."""
+    choices = []
+    seen = set()
+    for line in (text or "").splitlines()[-40:]:
+        m = re.match(r"^\s*(\d{1,2})\s*[\).:\-]\s*(.{1,80})\s*$", line)
+        if not m:
+            m = re.match(r"^\s*\[(\d{1,2})\]\s*(.{1,80})\s*$", line)
+        if m:
+            key = m.group(1)
+            label = safe_text(m.group(2).strip(), 70)
+            if key not in seen:
+                seen.add(key)
+                choices.append((key, label))
+    return choices[:8]
+
+
+def _tool_markup_with_choices(session_id, output):
+    markup = tool_terminal_menu(session_id)
+    choices = _tool_extract_buttons(output)
+    if choices:
+        row = []
+        for key, label in choices:
+            row.append(InlineKeyboardButton(f"{key}️⃣ {label}", callback_data=f"tool_input:{session_id}:{key}"))
+            if len(row) == 2:
+                markup.add(*row)
+                row = []
+        if row:
+            markup.add(*row)
+    return markup
+
+
+def _tool_write_log(session, chunk, stream="stdout"):
+    with session["lock"]:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        session["full_output"].append(f"[{stamp}] [{stream.upper()}] {chunk}")
+        try:
+            with open(session["log_path"], "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"[{stamp}] [{stream.upper()}]\n{chunk}\n")
+        except Exception:
+            pass
+
+
+def _tool_reader(session, stream, pipe):
+    try:
+        for line in iter(pipe.readline, ""):
+            if not line:
+                break
+            _tool_write_log(session, line.rstrip("\n"), stream)
+    except Exception as exc:
+        _tool_write_log(session, f"Reader error: {exc}", "stderr")
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
+def _tool_refresh_message(session_id, force=False):
+    session = tool_sessions.get(session_id)
+    if not session:
+        return
+    now = time.time()
+    if not force and now - session.get("last_ui", 0) < TOOL_EDIT_INTERVAL:
+        return
+    session["last_ui"] = now
+    with session["lock"]:
+        output = "\n".join(session["full_output"])
+    tail = output[-TOOL_MAX_LIVE_CHARS:]
+    process = session.get("process")
+    running = bool(process and process.poll() is None)
+    status = "🟢 RUNNING" if running else ("🔴 FAILED" if session.get("exit_code", 0) else "✅ FINISHED")
+    runtime = get_readable_uptime(max(0, time.time() - session["started_at"]))
+    prompt = session.get("waiting_for_input")
+    header = (
+        f"🖥️ **TERMINAL — {session_id}**\n\n"
+        f"{status}\n"
+        f"⏱ Runtime: `{runtime}`\n"
+        f"📤 Lines: `{len(output.splitlines()) if output else 0}`\n"
+    )
+    if prompt:
+        header += f"\n⌨️ **INPUT REQUIRED:** `{safe_text(prompt, 300)}`\n"
+    body = tail if tail else "_No output yet._"
+    if len(body) > TOOL_MAX_LIVE_CHARS:
+        body = body[-TOOL_MAX_LIVE_CHARS:]
+    text = header + "\n━━━━━━━━━━━━━━━━━━\n" + body
+    try:
+        bot.edit_message_text(
+            text,
+            session["chat_id"],
+            session["message_id"],
+            parse_mode=None,
+            reply_markup=_tool_markup_with_choices(session_id, output),
+        )
+    except Exception:
+        try:
+            bot.send_message(session["chat_id"], text, reply_markup=_tool_markup_with_choices(session_id, output))
+        except Exception:
+            pass
+
+
+
+def _tool_detect_web_service(session_id):
+    session = tool_sessions.get(session_id)
+    if not session or not session.get("web_port"):
+        return
+    if not _tool_http_probe(int(session["web_port"])):
+        return
+    base = _tool_public_base()
+    if not base:
+        _tool_write_log(session, "HTTP service detected locally, but no public base URL is configured.", "stderr")
+        return
+    session["web_url"] = f"{base}/tool/{session_id}/"
+    _tool_write_log(session, f"HTTP service detected: {session['web_url']}", "system")
+    _tool_refresh_message(session_id, force=True)
+
+
+def _tool_monitor(session_id):
+    session = tool_sessions.get(session_id)
+    if not session:
+        return
+    process = session.get("process")
+    last_ui = 0
+    while process and process.poll() is None and not SHUTDOWN_REQUESTED:
+        if time.time() - session["started_at"] > TOOL_MAX_RUNTIME:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            _tool_write_log(session, "Maximum tool runtime exceeded.", "stderr")
+            break
+        _tool_refresh_message(session_id)
+        time.sleep(0.25)
+    try:
+        rc = process.wait(timeout=2) if process else -1
+    except Exception:
+        rc = -1
+    session["exit_code"] = rc
+    session["waiting_for_input"] = None
+    _tool_refresh_message(session_id, force=True)
+    try:
+        bot.send_message(
+            session["chat_id"],
+            f"{'✅' if rc == 0 else '❌'} **Tool process finished**\n\n🆔 `{session_id}`\n📊 Exit Code: `{rc}`\n⏱ Runtime: `{get_readable_uptime(time.time() - session['started_at'])}`",
+            parse_mode="Markdown",
+            reply_markup=tool_terminal_menu(session_id),
+        )
+    except Exception:
+        pass
+
+
+
+def _tool_find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _tool_public_base():
+    if TOOL_WEB_BASE:
+        return TOOL_WEB_BASE
+    for key in ("RENDER_EXTERNAL_URL", "PUBLIC_URL", "APP_URL"):
+        value = os.environ.get(key, "").strip().rstrip("/")
+        if value:
+            return value
+    service = os.environ.get("RENDER_SERVICE_NAME", "").strip()
+    if service:
+        return f"https://{service}.onrender.com"
+    return ""
+
+
+def _tool_http_probe(port):
+    """Return True when a local HTTP service is actually listening."""
+    deadline = time.time() + TOOL_WEB_PROBE_TIMEOUT
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5) as sock:
+                sock.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                data = sock.recv(32)
+                if data.startswith(b"HTTP/"):
+                    return True
+        except Exception:
+            time.sleep(0.25)
+    return False
+
+
+def _tool_render_web_proxy(session_id):
+    """Proxy /tool/<session>/... to the tool's localhost HTTP server."""
+    session = tool_sessions.get(session_id)
+    if not session or not session.get("web_port"):
+        return None, 404
+    port = int(session["web_port"])
+    tail = request.path.split(f"/tool/{session_id}", 1)[-1] or "/"
+    if not tail.startswith("/"):
+        tail = "/" + tail
+    target = f"http://127.0.0.1:{port}{tail}"
+    try:
+        params = request.query_string.decode("utf-8", "ignore")
+        if params:
+            target += "?" + params
+        resp = requests.request(
+            request.method,
+            target,
+            headers={k: v for k, v in request.headers if k.lower() not in {"host", "content-length"}},
+            data=request.get_data(),
+            timeout=30,
+            allow_redirects=False,
+        )
+        excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+        headers = [(k, v) for k, v in resp.raw.headers.items() if k.lower() not in excluded]
+        return Response(resp.content, status=resp.status_code, headers=headers, content_type=resp.headers.get("content-type"))
+    except Exception as exc:
+        return jsonify({"error": "tool web service unavailable", "detail": str(exc)}), 502
+
+
+@app.route("/tool/<session_id>/", defaults={"subpath": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+@app.route("/tool/<session_id>/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+def tool_web_proxy(session_id, subpath):
+    result, status = _tool_render_web_proxy(session_id)
+    return result, status
+
+
+def _tool_start_process(session_id):
+    session = tool_sessions.get(session_id)
+    if not session or not session.get("prepared"):
+        return
+    if session.get("process") and session["process"].poll() is None:
+        _tool_refresh_message(session_id, force=True)
+        return
+    entry_path = os.path.join(session["workdir"], session["entry_file"])
+    try:
+        env = os.environ.copy()
+        env.update(user_custom_envs.get(str(session["user_id"]), {}))
+        # Give web-capable Python tools a private localhost port. Tools that
+        # do not expose HTTP simply ignore PORT and remain normal terminal jobs.
+        web_port = _tool_find_free_port()
+        env["PORT"] = str(web_port)
+        session["web_port"] = web_port
+        process = subprocess.Popen(
+            [sys.executable, entry_path], cwd=session["workdir"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1, env=env,
+        )
+        session["process"] = process
+        session["started_at"] = time.time()
+        session["exit_code"] = None
+        session["full_output"] = []
+        threading.Thread(target=_tool_reader, args=(session, "stdout", process.stdout), daemon=True, name=f"tool-out-{session_id}").start()
+        threading.Thread(target=_tool_reader, args=(session, "stderr", process.stderr), daemon=True, name=f"tool-err-{session_id}").start()
+        threading.Thread(target=_tool_monitor, args=(session_id,), daemon=True, name=f"tool-monitor-{session_id}").start()
+        threading.Thread(target=_tool_detect_web_service, args=(session_id,), daemon=True, name=f"tool-web-probe-{session_id}").start()
+        _tool_refresh_message(session_id, force=True)
+    except Exception as exc:
+        _tool_write_log(session, traceback.format_exc(), "stderr")
+        session["exit_code"] = -1
+        _tool_refresh_message(session_id, force=True)
+
+
+def _tool_prepare_and_start(session_id, source_path, entry_file, requirements_path=None):
+    session = tool_sessions.get(session_id)
+    if not session:
+        return
+    try:
+        status = bot.send_message(session["chat_id"], "⚙️ Preparing Python Tool...\n\n🔎 Inspecting project...\n📦 Checking requirements...")
+        session["prep_message_id"] = status.message_id
+        if requirements_path and os.path.exists(requirements_path):
+            bot.edit_message_text("📦 **Manual Requirements**\n\nInstalling `requirements.txt`...", session["chat_id"], status.message_id, parse_mode="Markdown")
+            result = subprocess.run([sys.executable, "-m", "pip", "install", "-r", requirements_path, "--no-cache-dir"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr[-5000:])
+        else:
+            bot.edit_message_text("🧠 **Smart Auto-Install**\n\nAnalyzing Python imports...", session["chat_id"], status.message_id, parse_mode="Markdown")
+            packages = deep_analyze_imports(source_path if os.path.isdir(source_path) else os.path.dirname(source_path))
+            ok, err = auto_install_packages_verified(packages, session["chat_id"], status.message_id, session["started_at"])
+            if not ok:
+                raise RuntimeError(err)
+        entry_path = os.path.join(session["workdir"], entry_file)
+        py_compile.compile(entry_path, doraise=True)
+        session["prepared"] = True
+        bot.edit_message_text(
+            "🟢 **Tool Ready**\n\nAll preparation completed.\n\nPress `🖥️ Terminal` when you want to start/access the interactive process.",
+            session["chat_id"], status.message_id, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(row_width=2).add(
+                InlineKeyboardButton("🖥️ Terminal", callback_data=f"tool_terminal:{session_id}"),
+                InlineKeyboardButton("📄 See Output as File", callback_data=f"tool_file:{session_id}"),
+                InlineKeyboardButton("🔙 Tool Runner", callback_data="tool_runner"),
+            ),
+        )
+    except Exception as exc:
+        _tool_write_log(session, traceback.format_exc(), "stderr")
+        session["exit_code"] = -1
+        try:
+            bot.edit_message_text(
+                f"❌ **Tool Preparation Failed**\n\n`{safe_text(exc, 3500)}`",
+                session["chat_id"],
+                session.get("prep_message_id", session["message_id"]),
+                parse_mode="Markdown",
+                reply_markup=tool_terminal_menu(session_id),
+            )
+        except Exception:
+            pass
+
+
+def _tool_detect_entry(workdir):
+    preferred = ("main.py", "app.py", "bot.py", "run.py", "index.py")
+    files = []
+    for root, _, names in os.walk(workdir):
+        for name in names:
+            if name.endswith(".py") and name != "__init__.py":
+                files.append(os.path.relpath(os.path.join(root, name), workdir))
+    for wanted in preferred:
+        for f in files:
+            if os.path.basename(f).lower() == wanted:
+                return f
+    if len(files) == 1:
+        return files[0]
+    # Prefer a file with a real top-level executable body/imports.
+    scored = []
+    for f in files:
+        score = 0
+        try:
+            tree = ast.parse(Path(workdir, f).read_text(encoding="utf-8", errors="ignore"))
+            if any(isinstance(n, ast.If) and isinstance(n.test, ast.Compare) for n in tree.body): score += 4
+            if any(isinstance(n, (ast.Call, ast.Expr)) for n in tree.body): score += 2
+            if "if __name__" in Path(workdir, f).read_text(encoding="utf-8", errors="ignore"): score += 5
+        except Exception:
+            pass
+        scored.append((score, f))
+    return max(scored, default=(0, None))[1]
+
+
+def _tool_source_from_message(message, workdir):
+    if message.document:
+        filename = os.path.basename(message.document.file_name or "tool.py")
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", filename)
+        if not (safe_name.lower().endswith(".py") or safe_name.lower().endswith(".zip")):
+            raise ValueError("Python Tool Runner accepts .py or .zip files.")
+        path = os.path.join(workdir, safe_name)
+        info = bot.get_file(message.document.file_id)
+        data = bot.download_file(info.file_path)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    text = (message.text or "").strip()
+    if re.match(r"^https?://", text, re.I):
+        # GitHub repository URL -> official archive. Raw/blob URLs are fetched
+        # as files. This keeps the runner useful for both projects and scripts.
+        clean = text.split("?", 1)[0].rstrip("/")
+        if "github.com/" in clean and "/blob/" not in clean and "/raw/" not in clean and not clean.endswith((".py", ".zip")):
+            parts = clean.split("github.com/", 1)[1].split("/")
+            if len(parts) >= 2:
+                owner, repo = parts[0], parts[1].removesuffix(".git")
+                branch = parts[3] if len(parts) >= 4 and parts[2] in ("tree", "branches") else "main"
+                archive = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
+                r = requests.get(archive, timeout=90, allow_redirects=True)
+                if r.status_code >= 400 and branch == "main":
+                    archive = f"https://github.com/{owner}/{repo}/archive/refs/heads/master.zip"
+                    r = requests.get(archive, timeout=90, allow_redirects=True)
+                r.raise_for_status()
+                path = os.path.join(workdir, "github_project.zip")
+                Path(path).write_bytes(r.content)
+                return path
+
+        r = requests.get(text, timeout=90, allow_redirects=True)
+        r.raise_for_status()
+        name = os.path.basename(clean) or "main.py"
+        if "/blob/" in clean:
+            name = os.path.basename(clean.split("/blob/", 1)[1]) or "main.py"
+        if text.lower().endswith(".zip") or "zip" in r.headers.get("content-type", "").lower():
+            name = name if name.lower().endswith(".zip") else "tool.zip"
+        else:
+            name = name if name.lower().endswith(".py") else "main.py"
+        path = os.path.join(workdir, re.sub(r"[^A-Za-z0-9_.-]", "_", name))
+        Path(path).write_bytes(r.content)
+        return path
+
+    if not text:
+        raise ValueError("Send a .py/.zip file, GitHub/raw URL, or Python source.")
+    path = os.path.join(workdir, "main.py")
+    Path(path).write_text(text, encoding="utf-8")
+    return path
+
+def process_tool_upload(message):
+    if (message.text or "").strip().lower() == "cancel":
+        bot.send_message(message.chat.id, "❌ Tool Runner cancelled.", reply_markup=tool_runner_menu())
+        return
+    session_id = "TOOL-" + str(random.randint(1000, 9999))
+    while session_id in tool_sessions:
+        session_id = "TOOL-" + str(random.randint(1000, 9999))
+    workdir = os.path.join(TEMP_DIR, session_id)
+    os.makedirs(workdir, exist_ok=True)
+    msg = bot.send_message(message.chat.id, f"📥 **{session_id}**\n\nReceiving Python tool/project...", parse_mode="Markdown")
+    session = {
+        "session_id": session_id, "user_id": message.from_user.id, "chat_id": message.chat.id,
+        "message_id": msg.message_id, "workdir": workdir, "started_at": time.time(),
+        "full_output": [], "log_path": os.path.join(workdir, "terminal_output.txt"),
+        "process": None, "exit_code": None, "lock": threading.RLock(), "waiting_for_input": None,
+        "source": None, "entry_file": None, "web_port": None, "web_url": None, "prepared": False,
+    }
+    tool_sessions[session_id] = session
+    try:
+        source = _tool_source_from_message(message, workdir)
+        session["source"] = source
+        if source.lower().endswith(".zip"):
+            bot.edit_message_text("📦 **ZIP detected**\n\n🔎 Safely extracting project...", message.chat.id, msg.message_id, parse_mode="Markdown")
+            safe_extract_zip(source, workdir)
+            os.remove(source)
+        entry = _tool_detect_entry(workdir)
+        if not entry:
+            raise ValueError("No Python script was found in the supplied project.")
+        session["entry_file"] = entry
+        req = os.path.join(workdir, "requirements.txt")
+        if not os.path.exists(req):
+            # Search one level/deeper for a project requirements file.
+            found = next((str(Path(root) / "requirements.txt") for root, _, files in os.walk(workdir) if "requirements.txt" in files), None)
+            req = found if found else None
+        bot.edit_message_text(
+            f"🧪 **{session_id} READY FOR SETUP**\n\n🐍 Entry: `{entry}`\n📦 Requirements: `{'FOUND' if req else 'AUTO-DETECT'}`\n\nChoose how to prepare the tool.",
+            message.chat.id, msg.message_id, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(row_width=2).add(
+                InlineKeyboardButton("🧠 Smart Auto-Install", callback_data=f"tool_prepare_auto:{session_id}"),
+                InlineKeyboardButton("📝 Manual Requirements", callback_data=f"tool_prepare_manual:{session_id}"),
+                InlineKeyboardButton("🖥️ Terminal (after setup)", callback_data=f"tool_terminal:{session_id}"),
+                InlineKeyboardButton("🔙 Tool Runner", callback_data="tool_runner"),
+            ),
+        )
+        session["requirements_path"] = req
+    except Exception as exc:
+        shutil.rmtree(workdir, ignore_errors=True)
+        tool_sessions.pop(session_id, None)
+        bot.edit_message_text(f"❌ **Tool preparation failed**\n\n`{safe_text(exc, 3500)}`", message.chat.id, msg.message_id, parse_mode="Markdown", reply_markup=tool_runner_menu())
+
+
+def _tool_send_input(session_id, value):
+    session = tool_sessions.get(session_id)
+    if not session or not session.get("process"):
+        return
+    process = session["process"]
+    if process.poll() is not None or process.stdin is None:
+        return
+    try:
+        process.stdin.write(str(value) + "\n")
+        process.stdin.flush()
+        session["waiting_for_input"] = None
+        _tool_write_log(session, f">>> {value}", "input")
+        _tool_refresh_message(session_id, force=True)
+    except Exception as exc:
+        _tool_write_log(session, str(exc), "stderr")
+
+
+def _tool_manual_requirements(message, session_id):
+    session = tool_sessions.get(session_id)
+    if not session:
+        return
+    if (message.text or "").strip().lower() == "cancel":
+        bot.send_message(message.chat.id, "❌ Manual setup cancelled.", reply_markup=tool_runner_menu())
+        return
+    try:
+        req = os.path.join(session["workdir"], "requirements.txt")
+        if message.document:
+            info = bot.get_file(message.document.file_id)
+            data = bot.download_file(info.file_path)
+            Path(req).write_bytes(data)
+        elif message.text:
+            Path(req).write_text(message.text.replace(",", "\n"), encoding="utf-8")
+        else:
+            raise ValueError("Send requirements.txt or package names.")
+        session["requirements_path"] = req
+        threading.Thread(target=_tool_prepare_and_start, args=(session_id, session["workdir"], session["entry_file"], req), daemon=True).start()
+    except Exception as exc:
+        bot.send_message(message.chat.id, f"❌ `{safe_text(exc)}`", parse_mode="Markdown")
+
+
+def _tool_stop(session_id):
+    session = tool_sessions.get(session_id)
+    if not session or not session.get("process"):
+        return
+    p = session["process"]
+    try:
+        if p.poll() is None:
+            p.terminate()
+            try: p.wait(timeout=5)
+            except subprocess.TimeoutExpired: p.kill()
+        _tool_write_log(session, "Process stopped by user.", "stderr")
+    except Exception as exc:
+        _tool_write_log(session, str(exc), "stderr")
+    _tool_refresh_message(session_id, force=True)
+
+
+def _tool_send_output_file(session_id, chat_id):
+    session = tool_sessions.get(session_id)
+    if not session:
+        return
+    path = session["log_path"]
+    with session["lock"]:
+        content = "\n".join(session["full_output"])
+    Path(path).write_text(content or "(no terminal output)", encoding="utf-8", errors="replace")
+    try:
+        with open(path, "rb") as f:
+            bot.send_document(chat_id, f, caption=f"📄 Complete Terminal Output — {session_id}")
+    except Exception as exc:
+        bot.send_message(chat_id, f"❌ Could not send output file: `{safe_text(exc)}`", parse_mode="Markdown")
+
+
+def help_text():
+    return (
+        "❓ **XX ROOT HOSTING ENGINE — COMPLETE HELP**\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📌 **PURPOSE**\n"
+        "This board runs and manages Python programs/bots on the same server. "
+        "It keeps the existing bot-hosting system intact and adds a separate interactive Python Tool Runner.\n\n"
+        "🏗️ **BACKEND FLOW**\n"
+        "Telegram → input/file → inspector → ZIP extractor → Python entry detection → requirements → syntax check → process manager → logs/watchdog → Telegram UI.\n\n"
+        "🚀 **DEPLOY NEW BOT**\n"
+        "Use this for long-running hosted Python bots/services. Existing bot IDs, duplicate protection, health, logs, ENV, versions, rollback and recovery remain active.\n\n"
+        "🧪 **PYTHON TOOL RUNNER**\n"
+        "Use it like a small remote terminal. Send .py, .zip, GitHub/raw URL or Python source. The project is prepared, dependencies are installed, then a live Telegram Terminal is provided.\n\n"
+        "📦 **ZIP SUPPORT**\n"
+        "The ZIP may contain any normal project files. At least one Python script is required. HTML/CSS/JS/templates/static/config files are preserved. The runner finds a suitable Python entry point instead of requiring only main.py/bot.py/app.py.\n\n"
+        "🧠 **SMART AUTO-INSTALL**\n"
+        "Analyzes Python imports and installs recognized missing packages.\n\n"
+        "📝 **MANUAL REQUIREMENTS**\n"
+        "Use requirements.txt or provide package names when you want explicit dependency control.\n\n"
+        "🖥️ **TERMINAL**\n"
+        "Terminal output, stdout, stderr, tracebacks, prompts, runtime and exit status are shown in Telegram. Small output is live in chat. Very large output is kept in the complete terminal log file.\n\n"
+        "🔘 **INTERACTIVE OPTIONS**\n"
+        "Common numbered terminal menus such as 1) Start, 2) Settings, 3) Back are detected and rendered as Telegram buttons. Clicking a button sends that value to the same running process, so nested menus continue in the same session. Raw text input is also supported.\n\n"
+        "📄 **SEE OUTPUT AS FILE**\n"
+        "One button sends the complete accumulated terminal output as a .txt document, including stdout/stderr/input history.\n\n"
+        "🌐 **URL RULE**\n"
+        "A URL is shown only when the running Python program actually provides an HTTP/web service. A normal Python script, CLI tool or requirements-only project does not receive a fake URL. Python + HTML/CSS/JS receives a URL when the Python app actually serves the web content.\n\n"
+        "🔐 **ENV / TOKEN MANAGER**\n"
+        "Custom environment variables can be stored and passed to hosted processes/tools without exposing their values in the UI.\n\n"
+        "📊 **SERVER HEALTH**\n"
+        "Shows uptime, bots, running count, CPU, RAM, disk and engine protection status.\n\n"
+        "🩺 **RECOVERY**\n"
+        "Existing watchdog, restart limits, registry recovery and duplicate-process protection remain part of the hosting engine.\n\n"
+        "👑 **ADMIN PANEL**\n"
+        "Global health, all bots, maintenance mode, emergency stop, cleanup, broadcast and full backup remain available to admins.\n\n"
+        "⚠️ **TELEGRAM LIMITS**\n"
+        "Telegram messages have size/rate limits. The terminal therefore batches live updates instead of flooding the chat, while complete output is preserved in a file.\n\n"
+        "🔒 **IMPORTANT**\n"
+        "Tool Runner executes supplied Python code with the permissions of the hosting server. Only run code you trust.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🧭 **MICRO → MAX**\n"
+        "Input → validation → extraction → dependency setup → compilation guard → process → stdin/stdout/stderr → live Telegram rendering → controls → logs → output file → optional HTTP URL."
+    )
+
+
+def help_menu_markup():
+    return InlineKeyboardMarkup(row_width=2).add(
+        InlineKeyboardButton("📌 Overview", callback_data="help_section:overview"),
+        InlineKeyboardButton("🏗️ Backend Flow", callback_data="help_section:backend"),
+        InlineKeyboardButton("🧪 Tool Runner", callback_data="help_section:runner"),
+        InlineKeyboardButton("🖥️ Terminal", callback_data="help_section:terminal"),
+        InlineKeyboardButton("🚀 Bot Hosting", callback_data="help_section:hosting"),
+        InlineKeyboardButton("📦 Files & Requirements", callback_data="help_section:files"),
+        InlineKeyboardButton("🌐 URL Rules", callback_data="help_section:url"),
+        InlineKeyboardButton("🔐 ENV / Security", callback_data="help_section:security"),
+        InlineKeyboardButton("📊 Health / Recovery", callback_data="help_section:health"),
+        InlineKeyboardButton("🎛️ All Buttons", callback_data="help_section:buttons"),
+        InlineKeyboardButton("📚 Full Documentation", callback_data="help_full"),
+        InlineKeyboardButton("🔙 Dashboard", callback_data="main_menu"),
+    )
+
+
+def help_section_text(section):
+    sections = {
+        "overview": "📌 **Overview**\n\nThis board is a Telegram-controlled Python hosting and execution engine. It accepts Python projects, prepares dependencies, starts processes and reports their state back inside Telegram.",
+        "backend": "🏗️ **Backend Flow**\n\nTelegram → router → source/file → safe extraction → entry detection → requirements → compile check → process → logs → watchdog → Telegram controls. Existing deployment workers and recovery remain separate from Tool Runner sessions.",
+        "runner": "🧪 **Python Tool Runner**\n\nA small remote Python terminal. Send .py/.zip/GitHub/raw URL/source, prepare dependencies, then open Terminal. Small output stays live in Telegram; long output is archived and downloadable.",
+        "terminal": "🖥️ **Terminal**\n\nstdout + stderr + traceback + input are captured. Numbered menus can become Telegram buttons. Clicking 1/2/3 sends that value to the same process, so nested menus continue without restarting the program. Raw text input is also supported.",
+        "hosting": "🚀 **Bot Hosting**\n\nDeploy New Bot remains the long-running bot/service workflow. Existing IDs, process controls, health, logs, versions, rollback, ENV, duplicate protection and recovery are not removed.",
+        "files": "📦 **Files & Requirements**\n\n.py and .zip are supported. ZIPs may contain arbitrary project files as long as Python code exists. requirements.txt is supported automatically; Smart Auto-Install and Manual Requirements are both available.",
+        "url": "🌐 **URL Rules**\n\nNo fake URL. URL appears only when the running Python process actually exposes an HTTP service. HTML/CSS/JS alone is not enough; a Python web server must serve it.",
+        "security": "🔐 **ENV / Security**\n\nENV values are masked in UI. Tool code executes with the server account's permissions, so only trusted code should be run.",
+        "health": "📊 **Health / Recovery**\n\nThe existing watchdog monitors hosted bot processes, records crashes/errors, prevents duplicate processes and can recover eligible crashed bots. Server Health reports CPU/RAM/disk and engine state.",
+        "buttons": "🎛️ **All Buttons**\n\nDashboard: Deploy New Bot, My Bots, Running, ID Search Hub, ENV/Token Manager, Server Health, Storage & Backup, Stop My Bots, Python Tool Runner, Help. Admin: Global Health, All Bots, Maintenance, Emergency Stop, Deep Clean, Broadcast, Full Backup. Tool Runner adds Send Tool, Active Sessions, Smart/Manual Requirements, Terminal, Stop, Refresh, Restart and See Output as File.",
+    }
+    return sections.get(section, help_text())
+
+
+# ============================================================
 # BOT MENUS
 # ============================================================
 
@@ -2560,6 +3200,14 @@ def get_user_menu(
         InlineKeyboardButton(
             "🛑 Stop My Bots",
             callback_data="stop_my_bots",
+        ),
+        InlineKeyboardButton(
+            "🧪 Python Tool Runner",
+            callback_data="tool_runner",
+        ),
+        InlineKeyboardButton(
+            "❓ Help",
+            callback_data="help_menu",
         ),
     )
 
@@ -2931,6 +3579,128 @@ def handle_callbacks(call):
             ),
         )
 
+        return
+
+    if data == "help_menu":
+
+        bot.edit_message_text(
+            help_text(),
+            chat,
+            call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=help_menu_markup(),
+        )
+        return
+
+    if data == "help_full":
+        bot.edit_message_text(help_text(), chat, call.message.message_id, parse_mode="Markdown", reply_markup=help_menu_markup())
+        return
+
+    if data.startswith("help_section:"):
+        section = data.split(":", 1)[1]
+        bot.edit_message_text(help_section_text(section), chat, call.message.message_id, parse_mode="Markdown", reply_markup=help_menu_markup())
+        return
+
+    if data == "tool_runner":
+        bot.edit_message_text(
+            "🧪 **PYTHON TOOL RUNNER**\n\nA Telegram-based mini terminal. Send a `.py`, `.zip`, GitHub/raw URL or Python source.\n\nThe runner prepares dependencies, executes the tool and brings the interactive Terminal back into this board.",
+            chat, call.message.message_id, parse_mode="Markdown", reply_markup=tool_runner_menu()
+        )
+        return
+
+    if data == "tool_upload":
+        bot.send_message(chat, "📥 **Send Python Tool**\n\nAccepted: `.py`, `.zip`, GitHub/raw URL or Python source.\n\nType `cancel` to abort.", parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, process_tool_upload)
+        return
+
+    if data == "tool_sessions":
+        own = [(sid, s) for sid, s in tool_sessions.items() if is_admin(uid) or int(s.get("user_id", -1)) == int(uid)]
+        if not own:
+            bot.send_message(chat, "📭 No active tool sessions.", reply_markup=tool_runner_menu())
+            return
+        mk = InlineKeyboardMarkup(row_width=1)
+        for sid, sess in own[-20:]:
+            running = bool(sess.get("process") and sess["process"].poll() is None)
+            mk.add(InlineKeyboardButton(("🟢 " if running else "⚪ ") + sid, callback_data=f"tool_terminal:{sid}"))
+        mk.add(InlineKeyboardButton("🔙 Tool Runner", callback_data="tool_runner"))
+        bot.send_message(chat, "📚 **TOOL SESSIONS**", parse_mode="Markdown", reply_markup=mk)
+        return
+
+    if data.startswith("tool_prepare_auto:") or data.startswith("tool_prepare_manual:"):
+        session_id = data.split(":", 1)[1]
+        session = tool_sessions.get(session_id)
+        if not session or (not is_admin(uid) and int(session.get("user_id", -1)) != int(uid)):
+            return
+        if data.startswith("tool_prepare_manual:"):
+            bot.send_message(chat, "📝 Send `requirements.txt` or package names. Type `cancel` to abort.", parse_mode="Markdown")
+            bot.register_next_step_handler(call.message, lambda m, sid=session_id: _tool_manual_requirements(m, sid))
+            return
+        req = session.get("requirements_path")
+        threading.Thread(target=_tool_prepare_and_start, args=(session_id, session["workdir"], session["entry_file"], req), daemon=True, name=f"tool-prepare-{session_id}").start()
+        return
+
+    if data.startswith("tool_terminal:"):
+        session_id = data.split(":", 1)[1]
+        session = tool_sessions.get(session_id)
+        if not session or (not is_admin(uid) and int(session.get("user_id", -1)) != int(uid)):
+            return
+        if session.get("prepared") and not (session.get("process") and session["process"].poll() is None):
+            _tool_start_process(session_id)
+        _tool_refresh_message(session_id, force=True)
+        return
+
+    if data.startswith("tool_input:"):
+        parts = data.split(":", 2)
+        if len(parts) == 3:
+            session_id, value = parts[1], parts[2]
+            session = tool_sessions.get(session_id)
+            if session and (is_admin(uid) or int(session.get("user_id", -1)) == int(uid)):
+                _tool_send_input(session_id, value)
+        return
+
+    if data.startswith("tool_ask_input:"):
+        session_id = data.split(":", 1)[1]
+        session = tool_sessions.get(session_id)
+        if session and (is_admin(uid) or int(session.get("user_id", -1)) == int(uid)):
+            bot.send_message(chat, "⌨️ Send the exact input for the running program. It will be written to stdin.", reply_markup=tool_terminal_menu(session_id))
+            bot.register_next_step_handler(call.message, lambda m, sid=session_id: _tool_send_input(sid, m.text or ""))
+        return
+
+    if data.startswith("tool_stop:"):
+        session_id = data.split(":", 1)[1]
+        session = tool_sessions.get(session_id)
+        if session and (is_admin(uid) or int(session.get("user_id", -1)) == int(uid)):
+            _tool_stop(session_id)
+        return
+
+    if data.startswith("tool_refresh:"):
+        session_id = data.split(":", 1)[1]
+        _tool_refresh_message(session_id, force=True)
+        return
+
+    if data.startswith("tool_file:"):
+        session_id = data.split(":", 1)[1]
+        session = tool_sessions.get(session_id)
+        if session and (is_admin(uid) or int(session.get("user_id", -1)) == int(uid)):
+            _tool_send_output_file(session_id, chat)
+        return
+
+    if data.startswith("tool_restart:"):
+        session_id = data.split(":", 1)[1]
+        session = tool_sessions.get(session_id)
+        if session and (is_admin(uid) or int(session.get("user_id", -1)) == int(uid)):
+            try:
+                if session.get("process") and session["process"].poll() is None:
+                    _tool_stop(session_id)
+            except Exception:
+                pass
+            session["full_output"] = []
+            session["exit_code"] = None
+            session["started_at"] = time.time()
+            session["web_port"] = None
+            session["web_url"] = None
+            session["prepared"] = True
+            threading.Thread(target=_tool_start_process, args=(session_id,), daemon=True).start()
         return
 
     if data == "admin_panel":
@@ -4199,6 +4969,18 @@ def handle_callbacks(call):
 
 
 # ============================================================
+# PYTHON TOOL TERMINAL TEXT INPUT
+# ============================================================
+
+@bot.message_handler(func=lambda message: bool(message.text) and message.chat.id in {s.get("chat_id") for s in tool_sessions.values() if s.get("process") and s["process"].poll() is None})
+def handle_tool_terminal_text(message):
+    for sid, session in list(tool_sessions.items()):
+        if session.get("chat_id") == message.chat.id and session.get("process") and session["process"].poll() is None:
+            _tool_send_input(sid, message.text)
+            return
+
+
+# ============================================================
 # DEPLOYMENT UPLOAD
 # ============================================================
 
@@ -4427,10 +5209,32 @@ def process_script_upload(
                         break
 
                 if not entry_file:
-
-                    raise ValueError(
-                        "ZIP does not contain main.py, bot.py or app.py."
-                    )
+                    candidates = []
+                    for root, _, names in os.walk(bot_dir):
+                        for name in names:
+                            if name.endswith(".py") and name != "__init__.py":
+                                candidates.append(os.path.relpath(os.path.join(root, name), bot_dir))
+                    if len(candidates) == 1:
+                        entry_file = candidates[0]
+                    elif candidates:
+                        # Prefer files containing a normal executable main guard.
+                        scored = []
+                        for candidate in candidates:
+                            score = 0
+                            try:
+                                txt = Path(bot_dir, candidate).read_text(encoding="utf-8", errors="ignore")
+                                if "if __name__" in txt:
+                                    score += 5
+                                if "Flask(" in txt or "FastAPI(" in txt or "asyncio.run(" in txt:
+                                    score += 3
+                                if "def main(" in txt:
+                                    score += 2
+                            except Exception:
+                                pass
+                            scored.append((score, candidate))
+                        entry_file = max(scored)[1]
+                    else:
+                        raise ValueError("ZIP does not contain a Python script.")
 
             else:
 
