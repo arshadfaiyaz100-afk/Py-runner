@@ -9,7 +9,6 @@ tgcrypto==1.2.5
 Pillow==10.3.0
 beautifulsoup4==4.12.3
 opencv-python==4.9.0.80
-PyMuPDF==1.24.4
 PyYAML==6.0.1
 pycryptodome==3.20.0
 scikit-learn==1.4.2
