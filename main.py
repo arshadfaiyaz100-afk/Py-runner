@@ -17,6 +17,7 @@ import json
 import asyncio
 import signal
 import hashlib
+import hmac
 import tempfile
 import logging
 import platform
@@ -30,7 +31,7 @@ from dataclasses import dataclass, field
 from contextlib import contextmanager
 from typing import Any, Dict, Optional, Tuple, List
 
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 import telebot
 from telebot.types import (
     InlineKeyboardMarkup,
@@ -119,6 +120,144 @@ bot = telebot.TeleBot(
 )
 
 app = Flask(__name__)
+
+# ============================================================
+# TELEGRAM TRANSPORT / RENDER WEBHOOK
+# ============================================================
+
+IS_RENDER = bool(
+    os.environ.get("RENDER")
+    or os.environ.get("RENDER_EXTERNAL_URL")
+    or os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    or os.environ.get("RENDER_SERVICE_ID")
+)
+
+def _public_base_url():
+    explicit = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    external = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if external:
+        return external
+    hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
+    if hostname:
+        return (
+            hostname.rstrip("/")
+            if hostname.startswith(("http://", "https://"))
+            else "https://" + hostname
+        )
+    return ""
+
+WEBHOOK_SECRET = hashlib.sha256(BOT_TOKEN.encode("utf-8")).hexdigest()
+WEBHOOK_PATH = "/telegram/webhook"
+WEBHOOK_URL = ""
+_telegram_transport_configured = False
+_telegram_transport_lock = threading.Lock()
+
+def configure_telegram_transport():
+    """Use exactly one Telegram update transport per running board."""
+    global WEBHOOK_URL, _telegram_transport_configured
+
+    with _telegram_transport_lock:
+        if _telegram_transport_configured:
+            return "already-configured"
+
+        if IS_RENDER:
+            base = _public_base_url()
+            if not base:
+                raise RuntimeError(
+                    "Render detected but no public URL is available. "
+                    "Set PUBLIC_BASE_URL to the Render HTTPS URL."
+                )
+
+            WEBHOOK_URL = base + WEBHOOK_PATH
+            bot.remove_webhook()
+            time.sleep(0.5)
+
+            ok = bot.set_webhook(
+                url=WEBHOOK_URL,
+                secret_token=WEBHOOK_SECRET,
+                drop_pending_updates=True,
+            )
+            if ok is False:
+                raise RuntimeError("Telegram webhook setup returned False.")
+
+            _telegram_transport_configured = True
+            logger.info(
+                "Telegram transport: WEBHOOK ACTIVE | %s",
+                WEBHOOK_URL,
+            )
+            return "webhook"
+
+        _telegram_transport_configured = True
+        logger.info("Telegram transport: LOCAL POLLING MODE")
+        return "polling"
+
+def start_local_polling_once():
+    """Local-only polling fallback with a per-process duplicate-thread guard."""
+    if IS_RENDER:
+        logger.warning(
+            "Local polling request ignored: Render webhook mode is active."
+        )
+        return None
+
+    existing = getattr(start_local_polling_once, "_thread", None)
+    if existing is not None and existing.is_alive():
+        return existing
+
+    def _run():
+        try:
+            bot.infinity_polling(
+                timeout=10,
+                long_polling_timeout=5,
+                skip_pending=True,
+                allowed_updates=None,
+            )
+        except Exception:
+            logger.exception("Telegram polling stopped unexpectedly.")
+
+    thread = threading.Thread(
+        target=_run,
+        name="telegram-polling",
+        daemon=True,
+    )
+    thread.start()
+    start_local_polling_once._thread = thread
+    logger.info("Telegram local polling: ACTIVE")
+    return thread
+
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def telegram_webhook():
+    if not IS_RENDER:
+        return jsonify({"error": "webhook disabled in local mode"}), 404
+
+    supplied_secret = request.headers.get(
+        "X-Telegram-Bot-Api-Secret-Token",
+        "",
+    )
+    if not hmac.compare_digest(
+        supplied_secret,
+        WEBHOOK_SECRET,
+    ):
+        return jsonify({"error": "forbidden"}), 403
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid update"}), 400
+
+    try:
+        update = telebot.types.Update.de_json(
+            json.dumps(payload)
+        )
+        bot.process_new_updates([update])
+    except Exception:
+        logger.exception(
+            "Telegram webhook update processing failed."
+        )
+        return jsonify({"ok": False}), 200
+
+    return jsonify({"ok": True}), 200
+
 
 BASE_DIR = os.path.abspath(os.getcwd())
 
@@ -6268,17 +6407,10 @@ if __name__ == "__main__":
             daemon=True,
         ).start()
 
-        polling_thread = threading.Thread(
-            target=lambda: bot.infinity_polling(
-                timeout=10,
-                long_polling_timeout=5,
-                skip_pending=True,
-            ),
-            name="telegram-polling",
-            daemon=True,
-        )
+        transport = configure_telegram_transport()
 
-        polling_thread.start()
+        if transport == "polling":
+            start_local_polling_once()
 
         logger.info(
             "XX Supercharged Hosting Engine started."
@@ -6327,5 +6459,16 @@ if __name__ == "__main__":
         )
 
     finally:
+
+        try:
+            if IS_RENDER:
+                bot.remove_webhook()
+                logger.info(
+                    "Telegram webhook removed during shutdown."
+                )
+        except Exception:
+            logger.exception(
+                "Failed to remove Telegram webhook during shutdown."
+            )
 
         cleanup_engine()
