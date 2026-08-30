@@ -34,4 +34,3 @@ MarkupSafe==2.1.5
 click==8.1.7
 blinker==1.8.2
 reportlab==4.1.0
-
