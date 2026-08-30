@@ -13,6 +13,10 @@ import shutil
 import socket
 import random
 import importlib.util
+try:
+    import importlib.metadata as importlib_metadata
+except ImportError:
+    importlib_metadata = None
 import json
 import asyncio
 import signal
@@ -38,6 +42,16 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 from typing import Any, Dict, Optional, Tuple, List
+
+try:
+    from packaging.requirements import Requirement as PackagingRequirement
+    from packaging.utils import canonicalize_name as canonicalize_package_name
+    PACKAGING_AVAILABLE = True
+except ImportError:
+    PackagingRequirement = None
+    PACKAGING_AVAILABLE = False
+    def canonicalize_package_name(name):
+        return re.sub(r"[-_.]+", "-", str(name).strip()).lower()
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -363,6 +377,9 @@ banned_users = set()
 user_custom_envs: Dict[str, Dict[str, str]] = {}
 # Explicit per-bot runtime secrets/configuration. Never inject the entire user store.
 bot_envs: Dict[str, Dict[str, str]] = {}
+# Host/system dependency manager. This is intentionally separate from per-bot venvs.
+system_requirements_catalog: Dict[str, Dict[str, Any]] = {}
+system_requirements_lock = threading.RLock()
 
 bot_metadata: Dict[str, Dict[str, Any]] = {}
 bot_versions: Dict[str, List[Dict[str, Any]]] = {}
@@ -894,6 +911,7 @@ def registry_snapshot():
         "bots": bots,
         "envs": user_custom_envs,
         "bot_envs": bot_envs,
+        "system_requirements": system_requirements_catalog,
         "chats": list(user_chats),
         "banned_users": list(banned_users),
         "maintenance": MAINTENANCE_MODE,
@@ -944,7 +962,7 @@ def save_registry():
 
 
 def load_registry():
-    global user_custom_envs, bot_envs, user_chats, banned_users
+    global user_custom_envs, bot_envs, user_chats, banned_users, system_requirements_catalog
     global MAINTENANCE_MODE, bot_metadata, bot_versions, bot_metrics
 
     candidates = [REGISTRY_FILE, REGISTRY_BACKUP_FILE]
@@ -977,6 +995,8 @@ def load_registry():
     try:
         user_custom_envs = data.get("envs", {})
         bot_envs = data.get("bot_envs", {})
+        loaded_system_requirements = data.get("system_requirements", {})
+        system_requirements_catalog = loaded_system_requirements if isinstance(loaded_system_requirements, dict) else {}
         user_chats = set(data.get("chats", []))
         banned_users = set(data.get("banned_users", []))
         MAINTENANCE_MODE = bool(data.get("maintenance", False))
@@ -3315,6 +3335,321 @@ def env_start_check(chat_id, user_id):
 
 
 # ============================================================
+# SYSTEM REQUIREMENT DOWNLOADER / HOST DEPENDENCY MANAGER
+# ============================================================
+
+SYSTEM_REQUIREMENT_MAX_LINES = int(os.environ.get("SYSTEM_REQUIREMENT_MAX_LINES", "500"))
+SYSTEM_REQUIREMENT_MAX_TEXT_BYTES = int(os.environ.get("SYSTEM_REQUIREMENT_MAX_TEXT_BYTES", str(512 * 1024)))
+SYSTEM_REQUIREMENT_PIP_TIMEOUT = int(os.environ.get("SYSTEM_REQUIREMENT_PIP_TIMEOUT", str(3600)))
+SYSTEM_REQUIREMENT_MAX_OUTPUT = int(os.environ.get("SYSTEM_REQUIREMENT_MAX_OUTPUT", "6000"))
+
+
+def _system_installed_packages():
+    """Return the actual packages visible to this engine's Python interpreter."""
+    if importlib_metadata is None:
+        return {}
+    packages = {}
+    try:
+        for dist in importlib_metadata.distributions():
+            name = dist.metadata.get("Name") or dist.name
+            if not name:
+                continue
+            packages[canonicalize_package_name(name)] = {
+                "name": str(name),
+                "version": str(dist.version or "UNKNOWN"),
+            }
+    except Exception as exc:
+        logger.exception("System package inventory failed.")
+        return {"__ERROR__": {"name": "__ERROR__", "version": type(exc).__name__}}
+    return packages
+
+
+def _parse_system_requirements(text):
+    """Parse pasted/uploaded requirements without allowing pip global options."""
+    if not isinstance(text, str):
+        raise ValidationError("Requirements input must be text.")
+    if len(text.encode("utf-8", "replace")) > SYSTEM_REQUIREMENT_MAX_TEXT_BYTES:
+        raise ResourceLimitError("Requirements input is too large.")
+    lines = []
+    invalid = []
+    seen = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("-r", "--requirement", "-c", "--constraint", "--index-url", "--extra-index-url", "--trusted-host", "--find-links", "--no-index", "--config-settings", "--target", "--prefix", "--root", "--user")):
+            invalid.append((line, "pip option/directive is not accepted by System Requirement Downloader"))
+            continue
+        # Strip only trailing inline comments when separated by whitespace.
+        line = re.sub(r"\s+#.*$", "", line).strip()
+        if not line:
+            continue
+        if PACKAGING_AVAILABLE:
+            try:
+                req = PackagingRequirement(line)
+                if req.marker is not None and not req.marker.evaluate():
+                    continue
+                key = canonicalize_package_name(req.name)
+            except Exception as exc:
+                invalid.append((line, f"invalid requirement: {type(exc).__name__}"))
+                continue
+        else:
+            match = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s*(?:==|~=|>=|<=|!=|>|<).*)?$", line)
+            if not match:
+                invalid.append((line, "requirements parser unavailable or unsupported syntax"))
+                continue
+            key = canonicalize_package_name(match.group(1))
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(line)
+        if len(lines) >= SYSTEM_REQUIREMENT_MAX_LINES:
+            break
+    return lines, invalid
+
+
+def _requirement_satisfied(requirement_line, installed):
+    if not PACKAGING_AVAILABLE:
+        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)", requirement_line)
+        if not m:
+            return False
+        return canonicalize_package_name(m.group(1)) in installed
+    try:
+        req = PackagingRequirement(requirement_line)
+        if req.marker is not None and not req.marker.evaluate():
+            return True
+        current = installed.get(canonicalize_package_name(req.name))
+        if not current:
+            return False
+        if not req.specifier:
+            return True
+        return req.specifier.contains(current["version"], prereleases=True)
+    except Exception:
+        return False
+
+
+def _system_requirements_diff(requirements):
+    installed = _system_installed_packages()
+    missing = [line for line in requirements if not _requirement_satisfied(line, installed)]
+    already = [line for line in requirements if _requirement_satisfied(line, installed)]
+    return installed, already, missing
+
+
+def _record_system_requirement(requirement, status, version=None, error=None):
+    key = canonicalize_package_name(re.sub(r"\s*(?:==|~=|>=|<=|!=|>|<).*$", "", requirement).strip())
+    with system_requirements_lock:
+        system_requirements_catalog[key] = {
+            "requirement": requirement,
+            "status": status,
+            "version": version,
+            "error": error,
+            "updated_at": now_iso(),
+        }
+
+
+def _chunk_text(text, limit=3800):
+    text = str(text)
+    return [text[i:i + limit] for i in range(0, len(text), limit)] or [""]
+
+
+def _system_requirements_summary():
+    installed = _system_installed_packages()
+    if "__ERROR__" in installed:
+        return "❌ Installed-package inventory failed."
+    rows = sorted(installed.values(), key=lambda x: x["name"].lower())
+    lines = [f"📦 **Installed Python Packages**", f"Total: `{len(rows)}`", ""]
+    for item in rows:
+        lines.append(f"• `{item['name']}=={item['version']}`")
+    return "\n".join(lines)
+
+
+def system_requirements_menu_markup():
+    mk = InlineKeyboardMarkup(row_width=2)
+    mk.add(
+        InlineKeyboardButton("📦 Installed Packages", callback_data="sysreq_list"),
+        InlineKeyboardButton("➕ Add / Install", callback_data="sysreq_add"),
+        InlineKeyboardButton("🔄 Refresh", callback_data="sysreq_refresh"),
+        InlineKeyboardButton("📋 Managed List", callback_data="sysreq_managed"),
+        InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu"),
+    )
+    return mk
+
+
+def show_system_requirements(chat_id, user_id, prefix=None):
+    if not is_admin(user_id):
+        bot.send_message(chat_id, "❌ System Requirement Downloader is restricted to the master admin because it changes the host Python environment.")
+        return
+    installed = _system_installed_packages()
+    count = max(0, len(installed) - (1 if "__ERROR__" in installed else 0))
+    managed = len(system_requirements_catalog)
+    text = (
+        "⚙️ **SYSTEM REQUIREMENT DOWNLOADER**\n\n"
+        f"🐍 Python: `{sys.version.split()[0]}`\n"
+        f"📦 Installed packages: `{count}`\n"
+        f"🧾 Managed requirements: `{managed}`\n\n"
+        "Paste a requirements.txt body or package requirements.\n"
+        "Already-satisfied requirements are skipped automatically.\n"
+        "Version constraints are respected.\n"
+        "Installation runs in the background and is verified after pip completes."
+    )
+    bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=system_requirements_menu_markup())
+
+
+def _send_system_installed_list(chat_id):
+    text = _system_requirements_summary()
+    for chunk in _chunk_text(text):
+        bot.send_message(chat_id, chunk, parse_mode="Markdown")
+    bot.send_message(chat_id, "Use the buttons below for another action.", reply_markup=system_requirements_menu_markup())
+
+
+def _send_system_managed_list(chat_id):
+    with system_requirements_lock:
+        items = list(system_requirements_catalog.values())
+    items.sort(key=lambda x: str(x.get("requirement", "")).lower())
+    if not items:
+        bot.send_message(chat_id, "📋 **Managed List**\n\nNo requirements have been submitted yet.", parse_mode="Markdown", reply_markup=system_requirements_menu_markup())
+        return
+    lines = ["📋 **Managed System Requirements**", ""]
+    for item in items:
+        status = item.get("status", "UNKNOWN")
+        version = item.get("version") or "-"
+        lines.append(f"• `{safe_text(item.get('requirement',''), 160)}` → `{status}` (`{version}`)")
+        if item.get("error"):
+            lines.append(f"  ↳ `{safe_text(item['error'], 180)}`")
+    for chunk in _chunk_text("\n".join(lines)):
+        bot.send_message(chat_id, chunk, parse_mode="Markdown")
+    bot.send_message(chat_id, "", reply_markup=system_requirements_menu_markup())
+
+
+def _run_system_requirement_install(message, text):
+    chat_id = message.chat.id
+    try:
+        requirements, invalid = _parse_system_requirements(text)
+    except Exception as exc:
+        bot.send_message(chat_id, f"❌ Input rejected: `{safe_text(exc, 500)}`", parse_mode="Markdown", reply_markup=system_requirements_menu_markup())
+        return
+    if not requirements:
+        details = "\n".join(f"• `{safe_text(line, 180)}` — {reason}" for line, reason in invalid[:20]) or "No valid requirements found."
+        bot.send_message(chat_id, "❌ **No installable requirements**\n\n" + details, parse_mode="Markdown", reply_markup=system_requirements_menu_markup())
+        return
+
+    installed, already, missing = _system_requirements_diff(requirements)
+    status = bot.send_message(
+        chat_id,
+        "⏳ **System Requirement Check**\n\n"
+        f"📦 Submitted: `{len(requirements)}`\n"
+        f"⏭ Already installed/satisfied: `{len(already)}`\n"
+        f"📥 To install/upgrade: `{len(missing)}`\n"
+        f"⚠️ Invalid/skipped: `{len(invalid)}`",
+        parse_mode="Markdown",
+        reply_markup=system_requirements_menu_markup(),
+    )
+
+    if not missing:
+        for req in already:
+            current = installed.get(canonicalize_package_name(PackagingRequirement(req).name if PACKAGING_AVAILABLE else re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)", req).group(1)))
+            _record_system_requirement(req, "INSTALLED", current.get("version") if current else None)
+        save_registry()
+        bot.send_message(chat_id, "✅ All submitted requirements are already satisfied. Nothing was downloaded.", reply_markup=system_requirements_menu_markup())
+        return
+
+    def worker():
+        start = time.time()
+        req_file = None
+        try:
+            fd, req_file = tempfile.mkstemp(prefix="system_requirements_", suffix=".txt", dir=TEMP_DIR, text=True)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(missing) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            cmd = [sys.executable, "-m", "pip", "install", "-r", req_file, "--disable-pip-version-check", "--no-input", "--progress-bar", "off"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, bufsize=1)
+            output = []
+            deadline = time.time() + SYSTEM_REQUIREMENT_PIP_TIMEOUT
+            while True:
+                if time.time() > deadline:
+                    try: proc.kill()
+                    except Exception: pass
+                    raise TimeoutError(f"pip timed out after {SYSTEM_REQUIREMENT_PIP_TIMEOUT}s")
+                line = proc.stdout.readline() if proc.stdout else ""
+                if line:
+                    line = redact_sensitive_text(line.strip(), 500)
+                    if line:
+                        output.append(line)
+                        output = output[-40:]
+                elif proc.poll() is not None:
+                    break
+                else:
+                    time.sleep(0.05)
+            rc = proc.wait(timeout=10)
+            if rc != 0:
+                raise RuntimeError("pip failed: " + " | ".join(output[-8:]))
+            after = _system_installed_packages()
+            still_missing = [req for req in missing if not _requirement_satisfied(req, after)]
+            if still_missing:
+                raise RuntimeError("Installation command completed but verification failed for: " + ", ".join(still_missing[:12]))
+            for req in missing:
+                current = after.get(canonicalize_package_name(PackagingRequirement(req).name if PACKAGING_AVAILABLE else re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)", req).group(1)))
+                _record_system_requirement(req, "INSTALLED", current.get("version") if current else None)
+            for req in already:
+                current = after.get(canonicalize_package_name(PackagingRequirement(req).name if PACKAGING_AVAILABLE else re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)", req).group(1)))
+                _record_system_requirement(req, "SKIPPED", current.get("version") if current else None)
+            save_registry()
+            elapsed = _format_duration(time.time() - start)
+            bot.edit_message_text(
+                "✅ **SYSTEM REQUIREMENTS COMPLETE**\n\n"
+                f"📦 Submitted: `{len(requirements)}`\n"
+                f"⏭ Skipped: `{len(already)}`\n"
+                f"📥 Installed/updated: `{len(missing)}`\n"
+                f"⚠️ Invalid: `{len(invalid)}`\n"
+                f"⏱️ Elapsed: `{elapsed}`\n\n"
+                "🔎 Post-install verification: `PASSED`",
+                chat_id, status.message_id, parse_mode="Markdown", reply_markup=system_requirements_menu_markup()
+            )
+        except Exception as exc:
+            err = redact_sensitive_text(exc, 1200)
+            for req in missing:
+                _record_system_requirement(req, "FAILED", error=err)
+            try: save_registry()
+            except Exception: logger.exception("Failed saving system requirement failure state")
+            bot.edit_message_text(
+                "❌ **SYSTEM REQUIREMENT INSTALL FAILED**\n\n"
+                f"Error: `{safe_text(err, 1000)}`\n\n"
+                "No success is reported unless post-install verification passes.",
+                chat_id, status.message_id, parse_mode="Markdown", reply_markup=system_requirements_menu_markup()
+            )
+        finally:
+            if req_file:
+                try: os.remove(req_file)
+                except OSError: pass
+
+    threading.Thread(target=worker, name="system-requirement-installer", daemon=True).start()
+
+
+def system_requirements_input(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "❌ Access denied.")
+        return
+    if message.text and message.text.strip().lower() == "cancel":
+        show_system_requirements(message.chat.id, message.from_user.id)
+        return
+    if message.document:
+        if (message.document.file_size or 0) > SYSTEM_REQUIREMENT_MAX_TEXT_BYTES:
+            bot.send_message(message.chat.id, "❌ requirements file is too large.", reply_markup=system_requirements_menu_markup())
+            return
+        temp = None
+        try:
+            info = bot.get_file(message.document.file_id)
+            content = bot.download_file(info.file_path)
+            text = content.decode("utf-8", "replace")
+        except Exception as exc:
+            bot.send_message(message.chat.id, f"❌ Could not read requirements file: `{safe_text(exc, 500)}`", parse_mode="Markdown", reply_markup=system_requirements_menu_markup())
+            return
+        _run_system_requirement_install(message, text)
+        return
+    _run_system_requirement_install(message, message.text or "")
+
+# ============================================================
 # BOT MENUS
 # ============================================================
 
@@ -3375,6 +3710,11 @@ def get_user_menu(
         InlineKeyboardButton(
             "📊 Server Health",
             callback_data="server_ping",
+        ),
+
+        InlineKeyboardButton(
+            "⚙️ System Requirement Downloader",
+            callback_data="system_requirements",
         ),
 
         InlineKeyboardButton(
@@ -3779,6 +4119,37 @@ def handle_callbacks(call):
             ),
         )
 
+        return
+
+    if data == "system_requirements":
+        show_system_requirements(chat, uid)
+        return
+
+    if data == "sysreq_list":
+        if not is_admin(uid):
+            return
+        _send_system_installed_list(chat)
+        return
+
+    if data == "sysreq_managed":
+        if not is_admin(uid):
+            return
+        _send_system_managed_list(chat)
+        return
+
+    if data == "sysreq_refresh":
+        show_system_requirements(chat, uid)
+        return
+
+    if data == "sysreq_add":
+        if not is_admin(uid):
+            return
+        bot.send_message(
+            chat,
+            "➕ **Add System Requirements**\n\nPaste requirements.txt content, one package per line, or send a `requirements.txt` file.\n\nAlready-satisfied requirements will be skipped automatically.\nType `cancel` to stop.",
+            parse_mode="Markdown",
+        )
+        bot.register_next_step_handler(call.message, system_requirements_input)
         return
 
     if data == "admin_panel":
