@@ -1675,19 +1675,22 @@ def rotate_log_if_needed(
 
         rotated = (
             f"{path}."
-            f"{time.strftime('%Y%m%d_%H%M%S')}"
+            f"{time.strftime('%Y%m%d_%H%M%S_%f')}"
         )
 
-        os.replace(
-            path,
-            rotated,
-        )
-
-        open(
-            path,
-            "a",
-            encoding="utf-8",
-        ).close()
+        # Hosted child processes keep their stdout file descriptor open.
+        # Renaming the live file would leave the child writing into the old
+        # inode while the newly-created path stays empty. Preserve the active
+        # descriptor by copying the current log to the archive and truncating
+        # the original file in place.
+        with open(path, "rb") as source, open(rotated, "wb") as archive:
+            shutil.copyfileobj(source, archive, length=1024 * 1024)
+            archive.flush()
+            os.fsync(archive.fileno())
+        with open(path, "r+b") as active:
+            active.truncate(0)
+            active.flush()
+            os.fsync(active.fileno())
 
     except Exception:
         logger.exception(
@@ -1812,6 +1815,8 @@ def _deployment_state(bot_id):
             "pending": 0,
             "started_at": time.time(),
             "last_update": 0.0,
+            "updated_at": time.time(),
+            "freshness": "FRESH",
             "last_event": "Deployment initialized",
             "events": collections.deque(maxlen=18),
             "last_error": None,
@@ -1826,6 +1831,8 @@ def _deployment_event(bot_id, event, **updates):
         state["last_event"] = event
         state["events"].append(f"{time.strftime('%H:%M:%S')} | {event}")
         state["last_update"] = now
+        state["updated_at"] = now
+        state["freshness"] = "FRESH"
     return state
 
 
@@ -3718,7 +3725,19 @@ def show_bot_env_by_id(message, user_id):
     if not is_admin(user_id) and owner != int(user_id):
         bot.send_message(message.chat.id, "❌ Access denied.")
         return
-    env_list(message.chat.id, owner)
+    store = bot_envs.get(str(bot_id), {})
+    if not store:
+        text = f"🔐 **{bot_id} ENV**\n\nNo bot-specific variables saved."
+    else:
+        text = f"🔐 **{bot_id} ENV**\n\n" + "\n".join(
+            f"🟢 `{k}` → `{_mask_secret(str(v))}`" for k, v in store.items()
+        )
+    bot.send_message(
+        message.chat.id,
+        text,
+        parse_mode="Markdown",
+        reply_markup=env_menu_markup(),
+    )
 
 
 # ============================================================
